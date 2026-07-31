@@ -5,17 +5,68 @@ import time
 from pathlib import Path
 
 import boto3
-import hcl2
-
+import re
+from pathlib import Path
 
 DEFAULT_LOCALS = "managed_rules_locals.tf"
 DEFAULT_VARIABLES = "managed_rules_variables.tf"
 
+def load_variables_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
+
+def normalize_parameter_variables_from_text(params_text: str) -> dict:
+    var_pattern = re.compile(
+        r'variable\s+"([A-Za-z0-9_]+)"\s*{(.*?)(?=^variable\s+"|\Z)',
+        re.S | re.M,
+    )
+
+    optional_attr_pattern = re.compile(
+        r'([A-Za-z0-9_]+)\s*=\s*optional\((string|number|bool|boolean)(?:,\s*([^)]+))?\)'
+    )
+
+    default_block_pattern = re.compile(
+        r'default\s*=\s*{(.*?)}',
+        re.S,
+    )
+
+    normalized = {}
+
+    for var_name, body in var_pattern.findall(params_text):
+        if not var_name.endswith("_parameters"):
+            continue
+
+        attrs = []
+        type_block = re.search(r'type\s*=\s*object\(\s*{(.*?)}\s*\)', body, re.S)
+        if type_block:
+            for key, typ, default in optional_attr_pattern.findall(type_block.group(1)):
+                attrs.append(
+                    {
+                        "name": key,
+                        "type": typ,
+                        "default": default.strip() if default else None,
+                    }
+                )
+
+        defaults = {}
+        default_block = default_block_pattern.search(body)
+        if default_block:
+            for line in default_block.group(1).splitlines():
+                line = line.strip().rstrip(",")
+                if not line or "=" not in line:
+                    continue
+                key, value = [x.strip() for x in line.split("=", 1)]
+                defaults[key] = clean_string(value)
+
+        normalized[var_name] = {
+            "attrs": attrs,
+            "default": defaults,
+        }
+
+    return normalized
 def load_hcl(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return hcl2.load(f)
-
 
 def clean_string(value):
     if not isinstance(value, str):
@@ -150,14 +201,20 @@ def build_parameter_items(rules, variable_defs):
 def to_ddb_item(item: dict):
     ddb = {}
     for k, v in item.items():
+        if v is None:
+            continue
         if isinstance(v, bool):
             ddb[k] = {"BOOL": v}
+        elif isinstance(v, (int, float)):
+            ddb[k] = {"N": str(v)}
         elif isinstance(v, list):
-            if v:
-                ddb[k] = {"SS": [str(x) for x in v]}
+            values = [str(x) for x in v if x is not None and str(x) != ""]
+            if values:
+                ddb[k] = {"SS": values}
         else:
-            s = "" if v is None else str(v)
-            ddb[k] = {"S": s}
+            s = str(v)
+            if s != "":
+                ddb[k] = {"S": s}
     return ddb
 
 
@@ -191,15 +248,22 @@ def main():
     parser.add_argument("--dump-json-dir")
     args = parser.parse_args()
 
+    #managed_rules = load_managed_rules(Path(args.locals_file))
+    #variable_defs = parse_variables_with_hcl(Path(args.variables_file))
     managed_rules = load_managed_rules(Path(args.locals_file))
-    variable_defs = parse_variables_with_hcl(Path(args.variables_file))
+    variables_text = load_variables_text(Path(args.variables_file))
+    variable_defs = normalize_parameter_variables_from_text(variables_text)
 
-    print("!!!!!!!!!")
-    print("workspaces_workspace_tagged_parameters =")
-    print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
-    
     rules = normalize_rules(managed_rules)
     parameters = build_parameter_items(rules, variable_defs)
+
+    print("!AAA!!!!!!!AAA!")
+    print(f"variable_defs count: {len(variable_defs)}")
+    print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
+    print("!AAA!!!!!!!AAA!")
+    
+    #rules = normalize_rules(managed_rules)
+    #parameters = build_parameter_items(rules, variable_defs)
 
     if args.dump_json_dir:
         outdir = Path(args.dump_json_dir)
