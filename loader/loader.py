@@ -194,6 +194,9 @@ def main():
     managed_rules = load_managed_rules(Path(args.locals_file))
     variable_defs = parse_variables_with_hcl(Path(args.variables_file))
 
+    print("workspaces_workspace_tagged_parameters =")
+    print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
+    
     rules = normalize_rules(managed_rules)
     parameters = build_parameter_items(rules, variable_defs)
 
