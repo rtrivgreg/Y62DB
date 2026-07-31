@@ -8,9 +8,9 @@ Start with --dry-run plus --dump-json-dir so you can inspect the normalized outp
 Example:
 
 bash
-python3 load_config_rules.py \
-  --locals-file managed_rules_locals.tf \
-  --variables-file managed_rules_variables.tf \
+python3 loader.py \
+  --locals-file ~/repos/config-rules-all/vendor/niaid/managed_rules_locals.tf \
+  --variables-file ~/repos/config-rules-all/vendor/niaid/managed_rules_variables.tf \
   --rules-table config_rules \
   --parameters-table config_rule_parameters \
   --region us-east-1 \
@@ -19,7 +19,7 @@ python3 load_config_rules.py \
 Then live load:
 
 bash
-python3 load_config_rules.py \
+python3 loader.py \
   --locals-file managed_rules_locals.tf \
   --variables-file managed_rules_variables.tf \
   --rules-table config_rules \
