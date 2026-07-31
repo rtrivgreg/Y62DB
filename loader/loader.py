@@ -277,6 +277,7 @@ def main():
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--dump-json-dir")
+    parser.add_argument("--rule-limit", type=int, default=0)
     args = parser.parse_args()
 
     #managed_rules = load_managed_rules(Path(args.locals_file))
@@ -285,10 +286,12 @@ def main():
     variables_text = load_variables_text(Path(args.variables_file))
     variable_defs = normalize_parameter_variables_from_text(variables_text)
 
-    #rules = normalize_rules(managed_rules)
-    #parameters = build_parameter_items(rules, variable_defs)
-    rules = normalize_rules(managed_rules)[:10]
+    #rules = normalize_rules(managed_rules)[:10]
+    rules = normalize_rules(managed_rules)
+    if args.rule_limit > 0:
+        rules = rules[:args.rule_limit]
     parameters = build_parameter_items(rules, variable_defs)
+    
     #print(f"variable_defs count: {len(variable_defs)}")
     #print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
    
