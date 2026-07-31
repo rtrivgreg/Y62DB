@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 import time
 from pathlib import Path
 
 import boto3
-import re
+import hcl2
 from pathlib import Path
 
 DEFAULT_LOCALS = "managed_rules_locals.tf"
