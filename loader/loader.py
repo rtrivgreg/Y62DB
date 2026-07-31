@@ -199,43 +199,73 @@ def build_parameter_items(rules, variable_defs):
     return items
 
 
+SET_FIELDS = {"scopes"}
+
 def to_ddb_item(item: dict):
     ddb = {}
+
     for k, v in item.items():
         if v is None:
             continue
+
         if isinstance(v, bool):
             ddb[k] = {"BOOL": v}
+
         elif isinstance(v, (int, float)):
             ddb[k] = {"N": str(v)}
+
         elif isinstance(v, list):
             values = [str(x) for x in v if x is not None and str(x) != ""]
-            if values:
-                ddb[k] = {"SS": values}
+            if not values:
+                continue
+
+            if k in SET_FIELDS:
+                ddb[k] = {"SS": sorted(set(values))}
+            else:
+                ddb[k] = {"L": [{"S": x} for x in values]}
+
         else:
             s = str(v)
             if s != "":
                 ddb[k] = {"S": s}
-    return ddb
 
+    return ddb
 
 def chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
 
 
-def batch_write(client, table_name: str, items: list[dict]):
-    for batch in chunked(items, 25):
+def batch_write(client, table_name: str, items: list[dict], max_attempts: int = 10):
+    for batch_num, batch in enumerate(chunked(items, 25), start=1):
         request_items = {
             table_name: [{"PutRequest": {"Item": to_ddb_item(item)}} for item in batch]
         }
 
+        attempt = 0
+        delay = 1.0
+
         while request_items.get(table_name):
             resp = client.batch_write_item(RequestItems=request_items)
-            unprocessed = resp.get("UnprocessedItems", {})
-            request_items = unprocessed
-            if request_items:
-                time.sleep(1)
+            request_items = resp.get("UnprocessedItems", {})
+            unprocessed = len(request_items.get(table_name, []))
+
+            if not unprocessed:
+                break
+
+            attempt += 1
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    f"batch_write failed for table={table_name} batch={batch_num} "
+                    f"after {attempt} retries; unprocessed={unprocessed}"
+                )
+
+            print(
+                f"Retrying table={table_name} batch={batch_num} "
+                f"attempt={attempt} unprocessed={unprocessed} sleep={delay:.1f}s"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 16)
 
 
 def main():
@@ -255,17 +285,13 @@ def main():
     variables_text = load_variables_text(Path(args.variables_file))
     variable_defs = normalize_parameter_variables_from_text(variables_text)
 
-    rules = normalize_rules(managed_rules)
-    parameters = build_parameter_items(rules, variable_defs)
-
-    print("!AAA!!!!!!!AAA!")
-    print(f"variable_defs count: {len(variable_defs)}")
-    print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
-    print("!AAA!!!!!!!AAA!")
-    
     #rules = normalize_rules(managed_rules)
     #parameters = build_parameter_items(rules, variable_defs)
-
+    rules = normalize_rules(managed_rules)[:10]
+    parameters = build_parameter_items(rules, variable_defs)
+    #print(f"variable_defs count: {len(variable_defs)}")
+    #print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
+   
     if args.dump_json_dir:
         outdir = Path(args.dump_json_dir)
         outdir.mkdir(parents=True, exist_ok=True)
