@@ -11,6 +11,7 @@ Example:
 
 bash
 python3 ~/repos/Y62DB/loader/loader.py --locals-file ~/repos/config-rules-all/vendor/niaid/managed_rules_locals.tf --variables-file ~/repos/config-rules-all/vendor/niaid/managed_rules_variables.tf --rules-table config_rules --parameters-table config_rule_parameters --region us-east-1 --dry-run --dump-json-dir out
+
 Then live load:
 
 bash
