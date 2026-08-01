@@ -2,8 +2,8 @@
 import argparse
 import json
 import re
-import time
 from pathlib import Path
+import time
 
 import boto3
 import hcl2
@@ -294,7 +294,19 @@ def main():
     
     #print(f"variable_defs count: {len(variable_defs)}")
     #print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
-   
+    managed_rules = load_managed_rules(Path(args.locals_file))
+    print("raw managed_rules count:", len(managed_rules))
+    
+    rules = normalize_rules(managed_rules)
+    print("normalized rules count:", len(rules))
+    
+    raw = managed_rules.get("access-keys-rotated")
+    print("raw access-keys-rotated:")
+    print(raw)
+    
+    matches = [r for r in rules if r.get("name") == "access-keys-rotated"]
+    print("normalized access-keys-rotated count:", len(matches))
+    print(json.dumps(matches, indent=2))
     if args.dump_json_dir:
         outdir = Path(args.dump_json_dir)
         outdir.mkdir(parents=True, exist_ok=True)
