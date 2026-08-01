@@ -1,13 +1,21 @@
 {
-  "pk": {"S": "RULE#access-keys-rotated"},
-  "sk": {"S": "GROUP#corp#BINDING#default"},
-  "gsi1pk": {"S": "GROUP#corp"},
-  "gsi1sk": {"S": "RULE#access-keys-rotated#BINDING#default"},
-  "payload": {
-    "M": {
-      "maxAccessKeyAge": {"N": "60"},
-      "status": {"S": "ACTIVE"},
-      "version": {"N": "1"}
+  "config_rules": [
+    {
+      "PutRequest": {
+        "Item": {
+          "pk": {"S": "RULE#access-keys-rotated"},
+          "sk": {"S": "GROUP#corp#BINDING#default"},
+          "gsi1pk": {"S": "GROUP#corp"},
+          "gsi1sk": {"S": "RULE#access-keys-rotated#BINDING#default"},
+          "payload": {
+            "M": {
+              "maxAccessKeyAge": {"N": "60"},
+              "status": {"S": "ACTIVE"},
+              "version": {"N": "1"}
+            }
+          }
+        }
+      }
     }
-  }
+  ]
 }
