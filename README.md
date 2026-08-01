@@ -8,23 +8,9 @@ Y62DB was created after the limits of file-only and template-only rule managemen
 
 The project’s genesis is practical rather than theoretical: baseline managed-rule definitions were already available from Terraform source and conformance-pack generation scripts, but internal users needed a way to curate parameter values, preserve explicit empty `InputParameters: {}` semantics, and support different internal security expectations without forking the entire source corpus.[cite:129][cite:9][cite:482] That combination drove the move toward a DynamoDB-backed catalog that can preserve baseline inventory while allowing controlled CRUD on curated overlays.[cite:129][web:496]
 
-<<<<<<< HEAD
 ## Core purpose
 
 The core purpose of Y62DB is to provide a stable catalog for three different layers of rule data:[cite:129][web:79]
-=======
-bash
-python3 ~/repos/Y62DB/loader/loader.py --locals-file ~/repos/config-rules-all/vendor/niaid/managed_rules_locals.tf --variables-file ~/repos/config-rules-all/vendor/niaid/managed_rules_variables.tf --rules-table config_rules --parameters-table config_rule_parameters --region us-east-1 --dry-run --dump-json-dir out
-
-Then live load:
-
-python3 ~/repos/Y62DB/loader/loader.py \
-  --locals-file ~/repos/config-rules-all/vendor/niaid/managed_rules_locals.tf \
-  --variables-file ~/repos/config-rules-all/vendor/niaid/managed_rules_variables.tf \
-  --rules-table config_rules \
-  --parameters-table config_rule_parameters \
-  --region us-east-1
->>>>>>> a44ff21159a052e42be64a9859e56b396dc9ebe1
 
 - **Baseline inventory**: imported facts about AWS managed rules and parameter definitions from Terraform source and related generation inputs.[cite:129]
 - **Curated configuration**: approved internal parameter values and scope selections used to express organizational policy intent.[cite:129][cite:482]
@@ -32,7 +18,6 @@ python3 ~/repos/Y62DB/loader/loader.py \
 
 This design follows DynamoDB guidance to model around access patterns, minimize unnecessary table sprawl, and document key structures explicitly for future maintainers.[web:496][web:459]
 
-<<<<<<< HEAD
 ## Design principles
 
 Y62DB is built around a few durable principles that should remain true even if the implementation evolves:[cite:129][web:497]
@@ -169,5 +154,3 @@ Schema decisions should also be recorded in lightweight architecture decision re
 ## Working summary
 
 Y62DB is the durable catalog layer behind curated AWS Config managed-rule governance.[cite:129][web:503] Its job is to preserve baseline rule provenance, store explicit parameter and scope metadata, and support multiple internal organizational flavors without forcing duplication of the underlying managed-rule definition.[cite:129][cite:482]
-=======
->>>>>>> a44ff21159a052e42be64a9859e56b396dc9ebe1
