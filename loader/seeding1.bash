@@ -1,1 +1,1 @@
-aws dynamodb batch-write-item --request-items file://seeds/seeding1.json
+aws dynamodb batch-write-item --request-items file://./seeding1.json --region us-east-1
