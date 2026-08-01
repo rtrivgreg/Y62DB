@@ -11,11 +11,11 @@ variable "environment" {
 }
 
 variable "config_rules_table_name" {
-  type        = string
-  default     = "config_rules"
+  type    = string
+  default = "config_rules"
 }
 
 variable "config_rule_parameters_table_name" {
-  type        = string
-  default     = "config_rule_parameters"
+  type    = string
+  default = "config_rule_parameters"
 }
