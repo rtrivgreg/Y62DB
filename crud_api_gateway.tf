@@ -1,6 +1,7 @@
 # REST API matching the API contract in README.md:
 #   /rules/{ruleId}/bindings                    -> GET (list bindings for a rule), POST (create binding)
 #   /rules/{ruleId}/bindings/{group}/{binding}  -> GET (read), PUT (replace payload), DELETE (remove)
+#   /rules/{ruleId}/catalog                     -> GET (full catalog entry: profile + param defs, see §12.11)
 #   /groups/{group}/bindings                    -> GET (list bindings for a group, via gsi1)
 # Every method integrates with the same Lambda function (AWS_PROXY), which
 # routes internally based on httpMethod + resource (see src/handler.py).
@@ -177,6 +178,78 @@ resource "aws_api_gateway_integration_response" "rule_bindings_options_200" {
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
   }
   depends_on = [aws_api_gateway_integration.rule_bindings_options]
+}
+
+# ---- /rules/{ruleId}/catalog -- full catalog entry (profile + param defs) ----
+# See docs/BLUEPRINT.md §12.11. Lets the UI drill into a rule's description,
+# severity, scopes, and PARAMETER_DEF set before creating a binding for it.
+
+resource "aws_api_gateway_resource" "rule_catalog" {
+  rest_api_id = aws_api_gateway_rest_api.rule_catalog_api.id
+  parent_id   = aws_api_gateway_resource.rule_id.id
+  path_part   = "catalog"
+}
+
+resource "aws_api_gateway_method" "rule_catalog_get" {
+  rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id   = aws_api_gateway_resource.rule_catalog.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.ruleId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "rule_catalog_get" {
+  rest_api_id             = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id             = aws_api_gateway_resource.rule_catalog.id
+  http_method             = aws_api_gateway_method.rule_catalog_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.crud_api.invoke_arn
+}
+
+resource "aws_api_gateway_method" "rule_catalog_options" {
+  rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id   = aws_api_gateway_resource.rule_catalog.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "rule_catalog_options" {
+  rest_api_id = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id = aws_api_gateway_resource.rule_catalog.id
+  http_method = aws_api_gateway_method.rule_catalog_options.http_method
+  type        = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "rule_catalog_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id = aws_api_gateway_resource.rule_catalog.id
+  http_method = aws_api_gateway_method.rule_catalog_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "rule_catalog_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.rule_catalog_api.id
+  resource_id = aws_api_gateway_resource.rule_catalog.id
+  http_method = aws_api_gateway_method.rule_catalog_options.http_method
+  status_code = aws_api_gateway_method_response.rule_catalog_options_200.status_code
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.rule_catalog_options]
 }
 
 # ---- /rules/{ruleId}/bindings/{group}/{binding} -------------------------------
@@ -455,12 +528,14 @@ resource "aws_api_gateway_deployment" "rule_catalog_api" {
       aws_api_gateway_resource.rule_bindings.id,
       aws_api_gateway_resource.rule_binding_group.id,
       aws_api_gateway_resource.rule_binding_name.id,
+      aws_api_gateway_resource.rule_catalog.id,
       aws_api_gateway_resource.group_bindings.id,
       aws_api_gateway_method.rule_bindings_get.id,
       aws_api_gateway_method.rule_bindings_post.id,
       aws_api_gateway_method.rule_binding_get.id,
       aws_api_gateway_method.rule_binding_put.id,
       aws_api_gateway_method.rule_binding_delete.id,
+      aws_api_gateway_method.rule_catalog_get.id,
       aws_api_gateway_method.group_bindings_get.id,
       aws_api_gateway_method.rules_get.id,
       aws_api_gateway_method.groups_get.id,
@@ -469,6 +544,7 @@ resource "aws_api_gateway_deployment" "rule_catalog_api" {
       aws_api_gateway_integration.rule_binding_get.id,
       aws_api_gateway_integration.rule_binding_put.id,
       aws_api_gateway_integration.rule_binding_delete.id,
+      aws_api_gateway_integration.rule_catalog_get.id,
       aws_api_gateway_integration.group_bindings_get.id,
       aws_api_gateway_integration.rules_get.id,
       aws_api_gateway_integration.groups_get.id,
@@ -485,6 +561,7 @@ resource "aws_api_gateway_deployment" "rule_catalog_api" {
     aws_api_gateway_integration.rule_binding_get,
     aws_api_gateway_integration.rule_binding_put,
     aws_api_gateway_integration.rule_binding_delete,
+    aws_api_gateway_integration.rule_catalog_get,
     aws_api_gateway_integration.group_bindings_get,
     aws_api_gateway_integration.rules_get,
     aws_api_gateway_integration.groups_get,

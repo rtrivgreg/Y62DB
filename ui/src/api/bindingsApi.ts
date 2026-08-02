@@ -35,6 +35,30 @@ export interface ApiError {
   details?: Record<string, unknown>;
 }
 
+/** One entry from the merged `GET /rules` response (see docs/BLUEPRINT.md §12.11). */
+export interface RuleWithBindingStatus {
+  rule_id: string;
+  has_binding: boolean;
+}
+
+export interface RuleCatalogParameter {
+  name: string;
+  data_type: string;
+  required: boolean;
+  default_value: string;
+}
+
+/** `GET /rules/{ruleId}/catalog` response — full seeded catalog entry for one rule. */
+export interface RuleCatalog {
+  rule_id: string;
+  source_identifier: string;
+  description: string;
+  severity: string;
+  scopes: string[];
+  managed_rule: boolean;
+  parameters: RuleCatalogParameter[];
+}
+
 export interface ApiEnvelope<T> {
   success: boolean;
   data: T | null;
@@ -174,12 +198,25 @@ export async function deleteBinding(
 }
 
 /**
- * GET /rules — every distinct rule ID that has at least one binding.
- * Candidate list for client-side fuzzy rule-ID search (see `../fuzzyMatch`).
+ * GET /rules — every rule the UI needs to know about: the merged catalog +
+ * bindings view (see docs/BLUEPRINT.md §12.11). Each entry is tagged with
+ * `has_binding`. Powers both the rule-ID search box (substring match
+ * against the full merged list, see `../fuzzyMatch`) and the Create
+ * Binding rule picker (source rules that have never been bound).
  */
-export async function listAllRuleIds(): Promise<string[]> {
+export async function listAllRuleIds(): Promise<RuleWithBindingStatus[]> {
   const res = await authorizedFetch("/rules");
-  return (await parseEnvelope<string[]>(res)) ?? [];
+  return (await parseEnvelope<RuleWithBindingStatus[]>(res)) ?? [];
+}
+
+/**
+ * GET /rules/{ruleId}/catalog — full catalog entry for one rule (profile +
+ * parameter defs). Throws `BindingsApiError` with code "not_found" (404) if
+ * `ruleId` has no seeded catalog entry (e.g. a binding-only rule).
+ */
+export async function getRuleCatalog(ruleId: string): Promise<RuleCatalog | null> {
+  const res = await authorizedFetch(`/rules/${encodeURIComponent(ruleId)}/catalog`);
+  return parseEnvelope<RuleCatalog>(res);
 }
 
 /**

@@ -1041,3 +1041,155 @@ passes after the fix. Full suite: `python -m pytest api/tests/` — 16/16
 passed (was 15 before this test was added). `npm run build`
 (`tsc --noEmit` + `vite build`) — succeeds cleanly; no UI code changed
 for this fix, only the backend candidate list.
+
+### §12.11 — Feature: hybrid catalog visibility for the rule picker (2026-08-02)
+
+**Context:** with §11's loader seeding the full AWS Config rule catalog
+(802 `RULE_PROFILE` items, 670 `PARAMETER_DEF` items) into the same table
+as `RULE_BINDING`, the UI had all the data it needed to let a user browse
+*every* known rule — not just ones someone had already bound — but
+`GET /rules` (post-§12.10 fix) only ever returned bound rule IDs, and the
+create-binding rule field was a bare free-text input with no
+autocomplete. The user's fully-specified request: make the whole rule
+catalog visible and searchable from the Bindings screen, with a way to
+inspect a rule's parameter definitions before binding it.
+
+**Approach — the user explicitly chose the hybrid of BOTH candidate
+options** rather than picking one:
+
+1. Wire the merged rule list into the Create Binding rule picker
+   (autocomplete/suggestions), **and**
+2. Add a single merged `GET /rules` endpoint carrying a `has_binding`
+   flag per rule, so the existing search screen can show catalog-only
+   rules too, not just bound ones.
+
+This is a deliberate reversal of the narrower design implied by §12.10's
+fix (which only restored `GET /rules` to bound-rules-only): the catalog
+is now the candidate source, and bindings are a per-rule status flag on
+top of it, not the other way around.
+
+**Search-field and match-style decisions (rule search only):**
+- Search field: **"Just rule_id"** — no fuzzy matching against
+  description, severity, or parameter names for this feature.
+- Match style: **"substring only"** — this explicitly **supersedes the
+  earlier fuzzy-matching requirement, for rule search only**. Group
+  search's typo-tolerant Levenshtein-prefix matcher (`fuzzyMatches` /
+  `fuzzyFilter` in `ui/src/fuzzyMatch.ts`) is unchanged and still backs
+  the "By group" search mode. Rule search now uses a new
+  `substringMatches` / `substringFilter` pair in the same file: lowercase,
+  separator-normalize, then a plain `includes()` check against `rule_id`.
+
+**Result detail level:** drilling into a rule shows its **full
+`PARAMETER_DEF` set** — names, types, required/default — **plus scope**,
+via a new `GET /rules/{ruleId}/catalog` endpoint, before the user commits
+to creating a binding for it.
+
+**Volume handling:** **"default to client side"** — the unbound-rules list
+from a rule search is rendered in full with no picker/fan-out gating
+(unlike the existing `MAX_FANOUT` picker, which still applies, unchanged,
+to *bound* rule matches and to group search, since those trigger real
+per-candidate Lambda invocations). Showing every unbound match costs
+nothing extra since no lookup is fired for them.
+
+**Terraform/deploy impact:** accepted with no objection — this feature
+requires a new API Gateway route and a live `terraform apply` before it
+works end-to-end (see "Not yet live" below).
+
+**Backend (`api/`):**
+- `api/src/common/dynamodb.py`: replaced `list_distinct_rule_ids()` with
+  `list_all_rules_with_binding_status()` — scans the table, unions every
+  `PROFILE#<ruleId>` catalog entry with every genuinely-bound rule ID (the
+  same `sk.startswith("GROUP#") and "#BINDING#" in sk` check from §12.10),
+  and returns `[{rule_id, has_binding}]` sorted by `rule_id`. Added
+  `get_rule_catalog(rule_id)`: `GetItem` on `PROFILE#<rule_id>` (raises
+  `NotFoundError` → 404 if missing, e.g. for a binding-only rule with no
+  seeded catalog entry), plus a `Query` on the `PARAMDEF#` sk prefix under
+  the same `pk`, returned as one merged dict (`rule_id, source_identifier,
+  description, severity, scopes, managed_rule, parameters`).
+  `list_distinct_groups()` is untouched — group search keeps its existing
+  bound-only semantics.
+- `api/src/rules/list_ids.py`: rewritten to call
+  `list_all_rules_with_binding_status()`. **Response shape is a breaking
+  change**, intentional per the hybrid decision: `GET /rules` went from
+  `list[str]` (bound rule IDs only) to `list[{"rule_id": str,
+  "has_binding": bool}]` (every catalog rule).
+- `api/src/rules/get_catalog.py`: new handler backing
+  `GET /rules/{ruleId}/catalog`.
+- `api/src/handler.py`: added the new route
+  `("GET", "/rules/{ruleId}/catalog"): get_catalog.handle`.
+- `api/tests/test_list_ids.py`: first test updated for the new dict shape;
+  the §12.10 catalog-exclusion test was rewritten as
+  `test_list_rule_ids_merges_catalog_and_bindings`, now asserting the
+  *opposite* of what §12.10 asserted — catalog-only rules and bound rules
+  must **both** appear, correctly tagged, with no `PARAMETER_DEF` items
+  leaking into the result.
+- `api/tests/test_get_catalog.py`: new — covers a happy-path fetch
+  (`test_get_catalog_returns_profile_and_parameters`) and the 404 case for
+  a rule with a binding but no catalog entry
+  (`test_get_catalog_404s_for_binding_only_rule`).
+- `crud_api_iam.tf`: comment near the DynamoDB IAM policy statement
+  updated — it referenced the now-removed `list_distinct_rule_ids`; now
+  points at `list_all_rules_with_binding_status` and notes the new
+  catalog endpoint needs no additional IAM grant (existing
+  GetItem/Query/Scan permissions already cover it).
+
+**Terraform (`crud_api_gateway.tf`):** added a new
+`/rules/{ruleId}/catalog` resource/method/integration/OPTIONS-CORS block,
+following the exact pattern already used for `rule_bindings`. Added the
+new resource/method/integration IDs to both
+`aws_api_gateway_deployment.rule_catalog_api`'s `triggers.redeployment`
+sha1 list and its `depends_on` list — easy to forget, and forgetting it
+means the route exists in the config but never actually deploys to the
+live stage.
+
+**Frontend (`ui/`):**
+- `ui/src/api/bindingsApi.ts`: `listAllRuleIds()` return type changed to
+  `RuleWithBindingStatus[]` (`{rule_id, has_binding}[]`), matching the new
+  `GET /rules` shape. Added `RuleCatalog` / `RuleCatalogParameter` types
+  and `getRuleCatalog(ruleId)` hitting `GET /rules/{ruleId}/catalog`.
+- `ui/src/fuzzyMatch.ts`: added `substringMatches` / `substringFilter`
+  alongside the existing `fuzzyMatches` / `fuzzyFilter` — the latter pair
+  is untouched and still used for group search.
+- `ui/src/pages/BindingsBrowser.tsx`: rule-mode search now calls the
+  merged `GET /rules`, substring-matches the query against `rule_id`, and
+  splits matches into **bound** (fanned out to `listBindingsForRule`
+  exactly like before, feeding the same results table, with the same
+  `MAX_FANOUT` too-broad picker) and **unbound** (rendered as a standalone
+  table with "View details" and "Create binding" buttons per row — no
+  fan-out, shown in full per the client-side volume decision). "View
+  details" (available for both bound and unbound rule matches) calls
+  `getRuleCatalog` and renders description, severity, scopes,
+  managed-rule flag, and the full parameter table inline. "Create
+  binding" from an unbound row opens the existing `BindingForm` in create
+  mode pre-filled with that `rule_id` via a new `pendingCreateRuleId`
+  piece of state. Group search's fuzzy-match behavior, its own
+  `groupMatches`/`groupTooBroad` state, and its picker/fan-out are
+  unchanged from §12.9/§12.10's fixed version — the two search modes now
+  fully own separate state.
+- `ui/src/components/BindingForm.tsx`: create-mode Rule ID field is now
+  an `<input list="rule-id-options">` backed by a `<datalist>` populated
+  from `listAllRuleIds()` on mount (best-effort — a fetch failure just
+  leaves the field a plain text input, it never blocks manual entry).
+  Edit mode is unaffected since its rule ID field is fixed/disabled.
+
+**Validation performed:** `python -m pytest api/tests/` — **18 passed**
+(16 baseline + the 2 new `test_get_catalog.py` tests; the rewritten
+`test_list_ids.py` test also passes). Terraform: temporarily stripped the
+`cloud{}` block from `terraform.tf` (backed up first), ran
+`terraform init -backend=false -input=false && terraform validate` →
+"Success! The configuration is valid.", then restored `terraform.tf` from
+the backup and confirmed the `cloud{}` block was back. Frontend:
+`npm run build` (`tsc --noEmit` + `vite build`) — succeeds cleanly, no
+type errors.
+
+**Not yet live:** exactly like every other backend/Terraform change in
+this document, this needs a real `terraform apply` in TFC workspace
+`Y62DB` before `GET /rules`'s new response shape or the new
+`GET /rules/{ruleId}/catalog` route actually exist against the deployed
+API — validation above only proves the HCL is syntactically valid and the
+Python logic is correct in isolation. Once applied, re-verify live with
+the same Cognito-auth `curl` pattern used for prior fixes (get an ID
+token via `InitiateAuth` for the `testuser` test user, then call
+`GET {api_base_url}/rules` and `GET {api_base_url}/rules/<a-real-rule-id>/catalog`
+with it as the `Authorization` header) before considering this feature
+verified end-to-end.

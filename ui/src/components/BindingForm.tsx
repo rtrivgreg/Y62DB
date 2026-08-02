@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Binding,
   BindingPayload,
   BindingsApiError,
   createBinding,
+  listAllRuleIds,
   updateBinding,
 } from "../api/bindingsApi";
 
@@ -49,6 +50,30 @@ export function BindingForm(props: Props) {
   const [extraJson, setExtraJson] = useState(existing ? extraKeysAsJson(existing.payload) : "{}");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Create-mode rule picker: suggestions sourced from the same merged
+  // catalog + bindings list (`GET /rules`, see docs/BLUEPRINT.md §12.11)
+  // that powers the BindingsBrowser rule search, so typing here offers
+  // every known rule_id — bound or not — not just previously-bound ones.
+  // Fetched once on mount; edit mode doesn't need it since the rule ID
+  // field is fixed there.
+  const [ruleIdOptions, setRuleIdOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (isEdit) return;
+    let cancelled = false;
+    listAllRuleIds()
+      .then((rules) => {
+        if (!cancelled) setRuleIdOptions(rules.map((r) => r.rule_id));
+      })
+      .catch(() => {
+        // Best-effort suggestions only — a failure here shouldn't block
+        // manually typing a rule_id, so it's silently ignored.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -124,7 +149,15 @@ export function BindingForm(props: Props) {
             onChange={(e) => setRuleId(e.target.value)}
             disabled={isEdit}
             placeholder="e.g. access-keys-rotated"
+            list={isEdit ? undefined : "rule-id-options"}
           />
+          {!isEdit && (
+            <datalist id="rule-id-options">
+              {ruleIdOptions.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+          )}
         </div>
         <div style={fieldWrapStyle}>
           <label style={labelStyle}>Group</label>

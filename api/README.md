@@ -43,13 +43,18 @@ aws-lambda-crud-api/
 │   │   ├── validation.py        # Declarative request validation middleware
 │   │   ├── dynamodb.py          # Access layer for y62db-config-rule-catalog
 │   │   └── exceptions.py        # ApiError hierarchy -> HTTP status codes
-│   └── bindings/
-│       ├── list_by_rule.py      # GET    /rules/{ruleId}/bindings
-│       ├── create.py            # POST   /rules/{ruleId}/bindings
-│       ├── get.py               # GET    /rules/{ruleId}/bindings/{group}/{binding}
-│       ├── update.py            # PUT    /rules/{ruleId}/bindings/{group}/{binding}
-│       ├── delete.py            # DELETE /rules/{ruleId}/bindings/{group}/{binding}
-│       └── list_by_group.py     # GET    /groups/{group}/bindings
+│   ├── bindings/
+│   │   ├── list_by_rule.py      # GET    /rules/{ruleId}/bindings
+│   │   ├── create.py            # POST   /rules/{ruleId}/bindings
+│   │   ├── get.py               # GET    /rules/{ruleId}/bindings/{group}/{binding}
+│   │   ├── update.py            # PUT    /rules/{ruleId}/bindings/{group}/{binding}
+│   │   ├── delete.py            # DELETE /rules/{ruleId}/bindings/{group}/{binding}
+│   │   └── list_by_group.py     # GET    /groups/{group}/bindings
+│   ├── rules/
+│   │   ├── list_ids.py          # GET    /rules (catalog + bindings, merged, see §12.11)
+│   │   └── get_catalog.py       # GET    /rules/{ruleId}/catalog
+│   └── groups/
+│       └── list_ids.py          # GET    /groups
 ├── tests/                       # pytest + moto (mocked DynamoDB, same key schema)
 ├── terraform/                   # IAM, Lambda, API Gateway (table referenced via data source)
 ├── requirements.txt
@@ -74,6 +79,8 @@ aws-lambda-crud-api/
   | `PUT`       | `/rules/{ruleId}/bindings/{group}/{binding}`  | `PutItem` (`attribute_exists(pk) AND payload.version = :expected_version`, full replace) | Replace a binding's payload |
   | `DELETE`    | `/rules/{ruleId}/bindings/{group}/{binding}`  | `DeleteItem` (`attribute_exists(pk)`)                 | Remove a binding                     |
   | `GET`       | `/groups/{group}/bindings`                    | `Query` on `gsi1` (`gsi1pk`)                          | List every rule bound to a group    |
+  | `GET`       | `/rules`                                      | `Scan` on base table, merged catalog + bindings       | List every catalog rule + every bound rule, tagged with `has_binding` |
+  | `GET`       | `/rules/{ruleId}/catalog`                     | `GetItem` (profile) + `Query` (`PARAMDEF#` prefix)     | Full catalog entry for one rule: description, severity, scopes, parameters |
 
   `PUT` performs a full replace of `payload` (standard REST semantics) —
   `rule_id`, `group`, `binding`, and `created_at` are preserved from the
@@ -191,15 +198,47 @@ GET /groups/corp/bindings
 ```
 
 #### `GET /rules`
-List every distinct rule ID that has at least one binding (full table scan
-+ dedupe on `pk`, sorted alphabetically). There's no separate rule-catalog
-data source yet, so this treats "rules with bindings" as the full universe.
-Used by the UI to power client-side fuzzy rule-ID search (fetch once,
-fuzzy-match locally, then fan out `GET /rules/{ruleId}/bindings` per match)
-rather than as a general-purpose catalog browser.
+List every rule the UI needs to know about (see docs/BLUEPRINT.md §12.11):
+the union of every rule ID with a seeded `RULE_PROFILE` catalog entry and
+every rule ID with at least one real binding, each tagged with
+`has_binding` (full table scan, sorted alphabetically by `rule_id`). A rule
+with both a catalog entry and a binding appears once, with
+`has_binding: true`.
+
+Powers two UI surfaces from one response: the rule-ID search box
+(client-side substring match against the full merged list — catalog-only
+rules are discoverable too, since users may want to create a first binding
+for them) and the Create Binding rule picker (source rules that have never
+been bound). This superseded an earlier bindings-only version of this
+endpoint (`§12.10`) once the loader started seeding catalog data into the
+same table.
 ```
 GET /rules
-200 OK -> data: ["access-keys-rotated", "access-keys-rotated2", ...], meta.count: 2
+200 OK -> data: [
+  { "rule_id": "access-keys-rotated", "has_binding": true },
+  { "rule_id": "s3-bucket-public-read-prohibited", "has_binding": false }
+], meta.count: 2
+```
+
+#### `GET /rules/{ruleId}/catalog`
+Full catalog entry for one rule — description, severity, scopes, and the
+complete `PARAMETER_DEF` set (parameter names, types, required/default
+values) — so the UI can show this before creating a binding. `404 Not
+Found` if `ruleId` has no seeded `RULE_PROFILE` item (e.g. a rule that only
+exists because it has a binding, like the QA test artifacts).
+```
+GET /rules/s3-bucket-versioning-enabled/catalog
+200 OK -> data: {
+  "rule_id": "s3-bucket-versioning-enabled",
+  "source_identifier": "S3_BUCKET_VERSIONING_ENABLED",
+  "description": "Checks that versioning is enabled for S3 buckets.",
+  "severity": "MEDIUM",
+  "scopes": ["AWS::S3::Bucket"],
+  "managed_rule": true,
+  "parameters": [
+    { "name": "someParam", "data_type": "string", "required": true, "default_value": "true" }
+  ]
+}
 ```
 
 #### `GET /groups`

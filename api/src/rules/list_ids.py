@@ -1,9 +1,16 @@
-"""GET /rules — list every rule ID that has at least one binding.
+"""GET /rules — list every rule the UI needs to know about.
 
-Powers the UI's client-side fuzzy rule-ID search: the browser fetches this
-full list once, fuzzy-matches the user's query against it locally, then
-fans out `GET /rules/{ruleId}/bindings` for each match. See
-`common.dynamodb.list_distinct_rule_ids` for the scan + caveats.
+Returns the merged catalog + bindings view (see docs/BLUEPRINT.md §12.11):
+every rule ID that has a seeded RULE_PROFILE catalog entry, every rule ID
+that has at least one real binding, tagged with `has_binding`:
+
+    [{"rule_id": "...", "has_binding": bool}, ...]
+
+Powers two UI surfaces from one response: the rule-ID search box (client-
+side substring match against the full merged list, so catalog-only rules
+are discoverable too) and the Create Binding rule picker (so a binding can
+be created for a rule that's never been bound). See
+`common.dynamodb.list_all_rules_with_binding_status` for the scan + caveats.
 """
 from common import dynamodb, response
 from common.validation import Schema, validate
@@ -13,5 +20,5 @@ schema = Schema()
 
 @validate(schema)
 def handle(event, context, path_params=None, body=None):
-    rule_ids = dynamodb.list_distinct_rule_ids()
-    return response.success(200, data=rule_ids, meta_extra={"count": len(rule_ids)})
+    rules = dynamodb.list_all_rules_with_binding_status()
+    return response.success(200, data=rules, meta_extra={"count": len(rules)})

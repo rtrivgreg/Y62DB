@@ -179,45 +179,101 @@ def update_binding(rule_id: str, group: str, binding: str, payload: dict, expect
     return _to_binding_view(item)
 
 
-def list_distinct_rule_ids() -> list:
-    """GET /rules — every rule ID that has at least one binding.
+def list_all_rules_with_binding_status() -> list:
+    """GET /rules — every rule the UI needs to know about, catalog + bound.
 
-    IMPORTANT (see docs/BLUEPRINT.md §12.10): since the §11 loader rewrite
-    seeded `RULE_PROFILE` (sk="PROFILE#<ruleId>") and `PARAMETER_DEF`
-    (sk="PARAMDEF#<parameterName>") items into this same table, `pk`
-    alone ("RULE#<ruleId>") is no longer a reliable signal that a rule has
-    a real binding — the whole ~802-rule catalog now shares that pk
-    prefix. Only `RULE_BINDING` items use the sk shape
-    "GROUP#<group>#BINDING#<binding>" (see `_sk` above), so both `pk` and
-    `sk` must be checked to return just rules with an actual binding, not
-    every catalog rule.
+    See docs/BLUEPRINT.md §12.11. Replaces the old `list_distinct_rule_ids`
+    (bindings-only) as the backing function for `GET /rules`: this endpoint
+    now powers both the rule-ID search box (which must be able to find
+    catalog-only rules too,
+    so users can create a first binding for them) and the Create Binding
+    rule picker. Returns the *union* of every rule ID that has a
+    `RULE_PROFILE` catalog item (sk="PROFILE#<ruleId>") and every rule ID
+    that has at least one real `RULE_BINDING` item (sk begins with
+    "GROUP#" and contains "#BINDING#"), each tagged with whether it
+    currently has a binding:
 
-    Does a full table Scan (paginated internally) and dedupes by pk — fine
-    at this table's current size, but would need a smarter approach (a
-    dedicated GSI) if the table grows large.
+        [{"rule_id": "...", "has_binding": bool}, ...]
+
+    sorted by rule_id. A rule with both a catalog entry and a binding
+    appears exactly once, with has_binding=True.
+
+    Does a full table Scan (paginated internally), same approach and same
+    scaling caveat as before.
     """
-    rule_ids = set()
+    catalog_ids = set()
+    bound_ids = set()
     kwargs = {"ProjectionExpression": "pk, sk"}
     while True:
         result = _table.scan(**kwargs)
         for item in result.get("Items", []):
             pk = item.get("pk", "")
             sk = item.get("sk", "")
-            if pk.startswith("RULE#") and sk.startswith("GROUP#") and "#BINDING#" in sk:
-                rule_ids.add(pk.split("RULE#", 1)[1])
+            if not pk.startswith("RULE#"):
+                continue
+            rule_id = pk.split("RULE#", 1)[1]
+            if sk.startswith("PROFILE#"):
+                catalog_ids.add(rule_id)
+            elif sk.startswith("GROUP#") and "#BINDING#" in sk:
+                bound_ids.add(rule_id)
         last_key = result.get("LastEvaluatedKey")
         if not last_key:
             break
         kwargs["ExclusiveStartKey"] = last_key
-    return sorted(rule_ids)
+    all_ids = catalog_ids | bound_ids
+    return [{"rule_id": rule_id, "has_binding": rule_id in bound_ids} for rule_id in sorted(all_ids)]
+
+
+def get_rule_catalog(rule_id: str) -> dict:
+    """GET /rules/{ruleId}/catalog — full catalog entry for one rule.
+
+    Reads the `RULE_PROFILE` item (pk="RULE#<ruleId>", sk="PROFILE#<ruleId>")
+    seeded by ``loader/loader.py``, plus every `PARAMETER_DEF` item under the
+    same pk (sk begins_with "PARAMDEF#"). Rules that only exist because
+    they have a binding but were never in the seeded catalog (e.g. the QA
+    test artifacts like "a2_1") have no RULE_PROFILE item -- 404s here,
+    since there's no catalog data to return.
+    """
+    result = _table.get_item(Key={"pk": _pk(rule_id), "sk": f"PROFILE#{rule_id}"})
+    profile = result.get("Item")
+    if not profile:
+        raise NotFoundError(
+            f"No catalog entry found for rule '{rule_id}'.",
+            details={"rule_id": rule_id},
+        )
+
+    param_result = _table.query(
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :sk_prefix)",
+        ExpressionAttributeValues={":pk": _pk(rule_id), ":sk_prefix": "PARAMDEF#"},
+    )
+    parameters = [
+        {
+            "name": p.get("parameter_name"),
+            "data_type": p.get("data_type"),
+            "required": p.get("required", False),
+            "default_value": p.get("default_value"),
+        }
+        for p in param_result.get("Items", [])
+    ]
+    parameters.sort(key=lambda p: p["name"] or "")
+
+    return {
+        "rule_id": rule_id,
+        "source_identifier": profile.get("source_identifier", ""),
+        "description": profile.get("description", ""),
+        "severity": profile.get("severity", ""),
+        "scopes": sorted(profile.get("scopes", []) or []),
+        "managed_rule": profile.get("managed_rule", False),
+        "parameters": parameters,
+    }
 
 
 def list_distinct_groups() -> list:
     """GET /groups — every group that has at least one binding.
 
-    Same rationale and same caveats as `list_distinct_rule_ids` above, just
-    extracting the group out of `sk` ("GROUP#<group>#BINDING#<binding>")
-    instead of the rule ID out of `pk`.
+    Same rationale and same caveats as `list_all_rules_with_binding_status`
+    above, just extracting the group out of `sk`
+    ("GROUP#<group>#BINDING#<binding>") instead of the rule ID out of `pk`.
     """
     groups = set()
     kwargs = {"ProjectionExpression": "sk"}

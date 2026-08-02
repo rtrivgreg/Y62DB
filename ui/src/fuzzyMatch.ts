@@ -87,3 +87,24 @@ export function fuzzyMatches(query: string, candidate: string): boolean {
 export function fuzzyFilter(query: string, candidates: string[]): string[] {
   return candidates.filter((c) => fuzzyMatches(query, c));
 }
+
+/**
+ * Plain case-insensitive substring match, normalizing separators the same
+ * way `normalize()` above does (so "access.keys" still matches
+ * "access-keys-rotated"). Used for the "By rule ID" search mode against the
+ * merged `GET /rules` catalog list (see docs/BLUEPRINT.md §12.11) —
+ * deliberately simpler than `fuzzyMatches`: the user's explicit choice for
+ * rule-ID search is substring-only, not typo-tolerant fuzzy matching. Group
+ * search is unaffected and keeps using `fuzzyMatches`/`fuzzyFilter` above.
+ */
+export function substringMatches(query: string, candidate: string): boolean {
+  const nq = normalize(query.trim());
+  const nc = normalize(candidate.trim());
+  if (!nq) return false;
+  return nc.includes(nq);
+}
+
+/** Filters `candidates` to those that substring-match `query`, preserving input order. */
+export function substringFilter(query: string, candidates: string[]): string[] {
+  return candidates.filter((c) => substringMatches(query, c));
+}
