@@ -41,6 +41,12 @@ export function BindingsBrowser() {
   const [notice, setNotice] = useState<string | null>(null);
   const [matchedCandidates, setMatchedCandidates] = useState<string[] | null>(null);
 
+  // Guardrail: this table can hold hundreds of real rule IDs/groups (not
+  // just test fixtures), so a broad fuzzy match could fan out to hundreds
+  // of individual API calls. Rather than hammering the API, ask for a more
+  // specific query once the match set gets unreasonably large.
+  const MAX_FANOUT = 40;
+
   async function runSearch() {
     const q = query.trim();
     if (!q) return;
@@ -57,13 +63,42 @@ export function BindingsBrowser() {
         return;
       }
 
+      if (matches.length > MAX_FANOUT) {
+        setResults(null);
+        setError(
+          `Query matched ${matches.length} ${mode === "rule" ? "rule ID(s)" : "group(s)"} — too broad to ` +
+            `fetch all at once. Try a longer or more specific query.`,
+        );
+        return;
+      }
+
       // Fan out an exact-match lookup per fuzzy-matched candidate and merge.
       // A given rule ID / group can have several bindings, so it can
-      // contribute more than one row here.
-      const perCandidate = await Promise.all(
+      // contribute more than one row here. Uses allSettled (not all) so a
+      // single failed lookup among many concurrent ones doesn't wipe out an
+      // otherwise-successful batch with a generic error — we surface
+      // partial results plus a note about what failed instead.
+      const outcomes = await Promise.allSettled(
         matches.map((c) => (mode === "rule" ? listBindingsForRule(c) : listBindingsForGroup(c))),
       );
-      setResults(perCandidate.flat());
+
+      const merged: Binding[] = [];
+      const failed: string[] = [];
+      outcomes.forEach((outcome, i) => {
+        if (outcome.status === "fulfilled") {
+          merged.push(...outcome.value);
+        } else {
+          failed.push(matches[i]);
+        }
+      });
+
+      setResults(merged);
+      if (failed.length > 0) {
+        setError(
+          `Fetched ${merged.length} binding(s) from ${matches.length - failed.length} match(es), but ` +
+            `${failed.length} lookup(s) failed (${failed.join(", ")}) — results below are partial. Try searching again.`,
+        );
+      }
     } catch (err) {
       if (err instanceof BindingsApiError) {
         setError(`${err.code} (HTTP ${err.status}): ${err.message}`);

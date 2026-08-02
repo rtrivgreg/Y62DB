@@ -838,3 +838,56 @@ binding under it).
   against live data (that requires the UI + a Cognito login, which the
   agent doesn't have credentials for) — worth a quick pass in the browser
   before calling this fully done.
+
+### §12.6 — Fix: short-query over-matching + fragile fan-out (2026-08-02)
+
+**Bug found during manual QA:** with two browser tabs open, a search in
+one tab returned a huge, nearly-alphabetical match list (~130+ rule IDs)
+instead of a small, relevant set — and the user reported it as an error.
+This also revealed the live table already holds hundreds of real AWS
+Managed Config rule names (e.g. `acm-certificate-expiration-check`,
+`alb-desync-mode-check`), not just test fixtures — useful context, but it
+meant the fuzzy-match bug below hit a much larger candidate set than any
+manual testing so far had exercised.
+
+**Root cause — fuzzy-match algorithm, not tab count:** the ~20%-error
+threshold from §12.5 breaks down for short queries. Comparing two
+2-character strings that share only their first character already has a
+Levenshtein distance of 1 — the same threshold used for 5-character
+queries. So a 2-character query like `a2` matched *every* candidate
+starting with `a`, regardless of the second character (reproduced
+directly in Node before fixing). The two-tab framing was circumstantial:
+it likely just made a heavier ~130-request fan-out (see below) more
+likely to hit a transient failure.
+
+**Fix 1 (`ui/src/fuzzyMatch.ts`):** added `MIN_FUZZ_LEN = 3`. Queries
+shorter than that now require an *exact* same-length prefix match (0
+edits) — no Levenshtein tolerance at all — while queries at or above that
+length keep the existing ~20%-error behavior from §12.5 unchanged.
+Re-verified in Node: all three original user examples (`acces`,
+`access-keys.rotated`, `access-keys.rotated2`) still produce the exact
+expected match sets; `a2` now correctly matches nothing (no candidate
+literally starts with `a2`) instead of ~130 unrelated rules.
+
+**Fix 2 (`ui/src/pages/BindingsBrowser.tsx`), defensive regardless of Fix
+1:** the search fan-out used `Promise.all`, so a single failed lookup
+among many concurrent ones (plausible with 100+ requests, or two tabs
+contending for the same Cognito session) wiped out the *entire* result
+set with a generic error. Switched to `Promise.allSettled`: successful
+lookups are merged and shown; failures are listed by name in a
+non-fatal warning instead of blanking the table. Also added a
+`MAX_FANOUT = 40` guardrail — if a query matches more candidates than
+that, the UI now asks for a more specific query instead of firing dozens
+of API calls at once.
+
+**Validation performed:**
+- Reproduced the bug directly in Node against the reported candidate
+  pattern before fixing (confirmed `a2`/`ac` matched everything
+  `a`-prefixed).
+- Re-ran all three §12.5 example queries post-fix — unchanged, correct
+  results.
+- `npm run build` (`tsc --noEmit` + `vite build`) — succeeds cleanly, no
+  type errors.
+- No backend changes in this fix, so no Terraform/apply implications —
+  this is pushable and effective immediately once pulled, no
+  `terraform apply` needed.

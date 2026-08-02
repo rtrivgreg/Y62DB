@@ -20,13 +20,27 @@
  *      this domain, not noise to fuzz away.
  *   3. Otherwise, compare the query against the same-length PREFIX of the
  *      candidate using Levenshtein edit distance, allowing up to ~20% error
- *      (minimum 1). This is what makes an incomplete/typo'd query like
- *      "acces" (missing the final "s") still match "access-keys-rotated"
- *      and "access-keys-rotated2" — both share that prefix — while a full,
+ *      (minimum 1, only once the query is long enough — see MIN_FUZZ_LEN
+ *      below). This is what makes an incomplete/typo'd query like "acces"
+ *      (missing the final "s") still match "access-keys-rotated" and
+ *      "access-keys-rotated2" — both share that prefix — while a full,
  *      separator-normalized query like "access-keys-rotated" matches both
  *      the exact rule and any rule that extends it (e.g. the "2" variant),
  *      since we're only comparing against its own length's worth of prefix.
+ *
+ * Guardrail for short queries: a fixed "~20% error" threshold breaks down
+ * for very short strings — comparing two 2-character strings that share
+ * only their first character already has an edit distance of 1, which is
+ * the same threshold used for 5-character queries. Left unguarded, a query
+ * like "a2" would fuzzy-match almost every candidate starting with "a"
+ * (regardless of the second character), which is exactly the runaway
+ * over-matching this caused in practice against a large real rule catalog.
+ * MIN_FUZZ_LEN below requires an EXACT prefix match (0 edits) for queries
+ * shorter than that, and only allows edit-distance tolerance once the
+ * query is long enough for a single edit to be a small fraction of it.
  */
+
+const MIN_FUZZ_LEN = 3;
 
 function normalize(s: string): string {
   return s.toLowerCase().replace(/[-_.\s]+/g, "-");
@@ -65,7 +79,7 @@ export function fuzzyMatches(query: string, candidate: string): boolean {
   if (nc.length < nq.length) return false;
 
   const prefix = nc.slice(0, nq.length);
-  const threshold = Math.max(1, Math.ceil(nq.length * 0.2));
+  const threshold = nq.length < MIN_FUZZ_LEN ? 0 : Math.max(1, Math.ceil(nq.length * 0.2));
   return levenshtein(nq, prefix) <= threshold;
 }
 
