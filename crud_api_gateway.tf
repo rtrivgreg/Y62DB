@@ -40,7 +40,8 @@ resource "aws_api_gateway_method" "rule_bindings_get" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.rule_bindings.id
   http_method   = "GET"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.ruleId" = true
   }
@@ -59,7 +60,8 @@ resource "aws_api_gateway_method" "rule_bindings_post" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.rule_bindings.id
   http_method   = "POST"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.ruleId" = true
   }
@@ -134,7 +136,8 @@ resource "aws_api_gateway_method" "rule_binding_get" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.rule_binding_name.id
   http_method   = "GET"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.ruleId"  = true
     "method.request.path.group"   = true
@@ -155,7 +158,8 @@ resource "aws_api_gateway_method" "rule_binding_put" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.rule_binding_name.id
   http_method   = "PUT"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.ruleId"  = true
     "method.request.path.group"   = true
@@ -176,7 +180,8 @@ resource "aws_api_gateway_method" "rule_binding_delete" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.rule_binding_name.id
   http_method   = "DELETE"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.ruleId"  = true
     "method.request.path.group"   = true
@@ -259,7 +264,8 @@ resource "aws_api_gateway_method" "group_bindings_get" {
   rest_api_id   = aws_api_gateway_rest_api.rule_catalog_api.id
   resource_id   = aws_api_gateway_resource.group_bindings.id
   http_method   = "GET"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
   request_parameters = {
     "method.request.path.group" = true
   }

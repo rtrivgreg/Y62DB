@@ -6,7 +6,8 @@ alone should be enough to understand *why* things are built the way they
 are, *what* exists today, *what state it's in*, and *what to do next* — for
 you or anyone else picking this back up cold.
 
-Last updated: 2026-08-02, after the loader single-table rewrite (see §11).
+Last updated: 2026-08-02, after adding Cognito authentication and deciding the
+form-UI roadmap (see §12).
 
 ---
 
@@ -121,7 +122,9 @@ this API and untouched by it.
 | `crud_api_iam.tf` | new | Lambda execution role, least-privilege DynamoDB policy, basic-execution attachment |
 | `crud_api_lambda.tf` | new | `archive_file` zip of `api/src`, CloudWatch log group, the Lambda function itself |
 | `crud_api_gateway.tf` | new | Full REST API: resources, methods, integrations, CORS OPTIONS handling, deployment, stage, Lambda invoke permission |
-| `crud_api_outputs.tf` | new | `api_base_url`, `lambda_function_name`, `dynamodb_table_name`, `dynamodb_table_arn` |
+| `crud_api_outputs.tf` | new, later modified | `api_base_url`, `lambda_function_name`, `dynamodb_table_name`, `dynamodb_table_arn`, plus `cognito_user_pool_id`/`cognito_user_pool_client_id` (added §12.1) |
+| `crud_api_cognito.tf` | new (§12.1) | Cognito User Pool + public app client (no secret, SRP auth) + `aws_api_gateway_authorizer` (`COGNITO_USER_POOLS`) shared by both the API and the future Amplify frontend's Auth category |
+| `docs/policies/tfc-run-role-additions.json` | new (§12.1) | Ready-to-attach IAM policy JSON for the TFC run role — see §8.1 |
 | `terraform.tf` | **modified in place** | Added `archive` provider (`hashicorp/archive ~> 2.4`) to the existing `required_providers` block. `cloud{}` block untouched. |
 
 Nothing else in the repo was touched — `dynamodb.tf`, `locals.tf`,
@@ -290,7 +293,8 @@ unchanged.
   confirming `Success!`, then restoring the exact original block before
   committing. This override was never committed — if you ever see a
   `backend "local"` block or a missing `cloud{}` block in a commit, that's
-  a mistake, not intentional.
+  a mistake, not intentional. Re-run and re-confirmed `Success!` after
+  adding `crud_api_cognito.tf` (§12.1), same technique.
 - **`pytest`**: 14/14 tests pass in `api/tests/` using `moto` to mock
   DynamoDB (`conftest.py` builds a table with the same `pk`/`sk`/`gsi1`
   schema as production). Includes a dedicated test that a stale
@@ -311,9 +315,12 @@ unchanged.
 - **Not yet applied.** No `terraform plan` or `apply` has been run against
   the `RSHL2136`/`Y62DB` Terraform Cloud workspace for this change. Nothing
   has been created in AWS yet by this stack.
-- **No API authentication configured.** Every method currently has
-  `authorization = "NONE"`. This is fine for a first plan/apply smoke test,
-  not fine to leave running unattended.
+- **API authentication: Cognito, wired but not yet applied.** All six
+  data-touching methods now require `authorization = "COGNITO_USER_POOLS"`
+  via `aws_api_gateway_authorizer.cognito` (`crud_api_cognito.tf`, §12.1).
+  `OPTIONS` methods stay `NONE` (required for CORS preflight). This closes
+  §8.2 as a decision, but like everything else in this stack it has never
+  been applied — nothing Cognito-related exists in AWS yet either.
 - **Legacy tables confirmed live — owned by a separate application,
   DO NOT TOUCH.** Verified directly against AWS (`aws-dynamodb-scan`,
   `us-east-1`): `config_rules` has **801 items**, `config_rule_parameters`
@@ -350,15 +357,23 @@ unchanged.
 ## 8. Open decisions and risks — needs a human
 
 1. **OIDC run-role permissions.** The Y62DB TFC workspace's run role has
-   only ever needed DynamoDB table permissions. This new plan will need
-   `lambda:*`, `iam:CreateRole`/`PutRolePolicy`/`PutRolePolicyAttachment`,
-   `apigateway:*`, `logs:CreateLogGroup`/`PutRetentionPolicy`, and
-   `dynamodb:DescribeTable`. If missing, the plan will apply the easy
-   resources and then fail partway through. **Do this before triggering
-   apply.**
-2. **API authentication.** Pick one before leaving this running beyond a
-   smoke test: IAM auth, API key + usage plan, or a Lambda/Cognito
-   authorizer.
+   only ever needed DynamoDB table permissions. This plan now needs
+   `lambda:*`, scoped `iam:CreateRole`/`PutRolePolicy`/`AttachRolePolicy`/
+   `PassRole`/etc. on the `y62db-rule-catalog-api-*` role name prefix,
+   `apigateway:*`, `logs:CreateLogGroup`/`PutRetentionPolicy`,
+   `dynamodb:DescribeTable`, and (new, for §12.1) `cognito-idp:CreateUserPool`/
+   `CreateUserPoolClient`/`DescribeUserPool*`/`UpdateUserPool*`/tagging
+   actions. A ready-to-attach policy document with all of the above is at
+   `docs/policies/tfc-run-role-additions.json` — attach it to the run role
+   (there is no Terraform Cloud connector available to do this
+   automatically; it must be done by hand in IAM, since the OIDC run role
+   itself lives outside this stack's own state). If missing, the plan will
+   apply the easy resources and then fail partway through. **Do this before
+   triggering apply.**
+2. **API authentication — RESOLVED, not yet applied.** Cognito User Pool +
+   authorizer chosen (§12.1) specifically because it doubles as the
+   Amplify frontend's Auth category later — one identity source for both
+   the API and the UI. Still needs a real `apply` before it does anything.
 3. **Legacy two-table fate — RESOLVED, no action needed.** `config_rules`/
    `config_rule_parameters` are owned by a separate, unrelated Python
    application and must be retained permanently (confirmed by the repo
@@ -510,3 +525,85 @@ rule relative to the current `config-rules-all` source, not a loader bug.
    and must be retained permanently. Y62DB's copy of this data in
    `y62db-config-rule-catalog` is additional, not a replacement — treat
    §8.3 as closed, not as a future cleanup task.
+
+---
+
+## 12. Form-UI roadmap (decided 2026-08-02, work starting with §12.1)
+
+### Why this track exists
+
+The end goal is a form-based UI for managing `RULE_BINDING`s, hosted on AWS
+Amplify. As of 2026, Amplify Gen 1 (and its drag-and-drop "Studio" form
+builder, which could auto-generate React forms from an arbitrary REST API)
+is heading into maintenance mode; Amplify Gen 2's auto-generated CRUD forms
+only work against Amplify's own `a.model()` data layer (its own
+AppSync+DynamoDB), not a hand-rolled single-table REST API like this one.
+Rebuilding the data layer to fit Amplify's model would duplicate/replace
+infrastructure that's already built and Terraform-managed here — not worth
+it for one form and a browse view.
+
+**Decision: Amplify Gen 2 for Hosting + Auth only.** The existing
+API Gateway + Lambda stack stays exactly as designed, registered with the
+frontend via Amplify's "use existing AWS resources" REST API pattern
+(`Amplify.configure({ API: { REST: { ... } } })` pointing at `api_base_url`).
+Forms are hand-built with `@aws-amplify/ui-react` field components, not
+generated by a form builder.
+
+### Decisions locked in
+
+| Question | Decision |
+|---|---|
+| Sequencing | Backend first — fix §8.1 (OIDC permissions), `terraform apply`, verify CRUD end-to-end and Cognito auth actually works, *then* start the frontend. Building a UI against a backend that's never been applied would mean debugging both layers blind at once. |
+| v1 form scope | `RULE_BINDING` create/edit/delete (the only CRUD entity this API has) **plus** a read-only browser for `RULE_PROFILE`/`PARAMETER_DEF` — lets a user look up what parameters a rule expects before creating a binding for it. Both are already fully supported by the existing API surface (§4.4) and real seeded data (§11); no backend changes needed for this scope. |
+| Repo layout | Single repo. New `ui/` subfolder, not a separate repo — matches this project's existing single-repo, IaC-heavy style. When Amplify Hosting is connected, use its monorepo "app root" setting pointed at `ui/` rather than the repo root. |
+
+### §12.1 — Done this session (not yet applied to real AWS)
+
+- `crud_api_cognito.tf`: Cognito User Pool (`aws_cognito_user_pool`), a
+  public app client with no secret (`aws_cognito_user_pool_client`, SRP +
+  refresh-token auth flows only — matches Amplify's `<Authenticator>`
+  component, no OAuth Hosted UI/callback URLs needed), and
+  `aws_api_gateway_authorizer.cognito` (`COGNITO_USER_POOLS` type).
+- `crud_api_gateway.tf`: all six data-touching methods
+  (`rule_bindings_get/post`, `rule_binding_get/put/delete`,
+  `group_bindings_get`) switched from `authorization = "NONE"` to
+  `COGNITO_USER_POOLS` + `authorizer_id`. All `OPTIONS` methods
+  deliberately left at `NONE` — CORS preflight requests aren't
+  authenticated by browsers.
+- `crud_api_outputs.tf`: added `cognito_user_pool_id` and
+  `cognito_user_pool_client_id` outputs — the future `ui/` app's
+  `Amplify.configure()` call needs both.
+- `docs/policies/tfc-run-role-additions.json`: the exact IAM policy JSON
+  to attach to the TFC run role, folding in the pre-existing §8.1
+  requirements plus the new `cognito-idp:*` actions this file needs.
+- Validated with the same temporary-`cloud{}`-removal `terraform
+  validate` technique as §6 — `Success!`. No `apply` attempted (same
+  reason as always: no Terraform Cloud credentials/connector in this
+  environment).
+
+### Next steps for this track (in order)
+
+1. Attach `docs/policies/tfc-run-role-additions.json` to the TFC run role
+   (manual, in IAM — see §8.1).
+2. `terraform plan`/`apply` in the `RSHL2136`/`Y62DB` workspace. Verify the
+   plan adds the Lambda/API Gateway/Cognito resources with **zero diff**
+   on `config_rules`/`config_rule_parameters` and the real
+   `y62db-config-rule-catalog` table (still a `data` source, §4.2).
+3. Create at least one real Cognito user (console or CLI) and confirm a
+   token from that user is accepted by the API Gateway authorizer, and
+   that requests without a token are rejected.
+4. Run the full CRUD sequence from §9 step 4 again, now with a real bearer
+   token attached.
+5. Scaffold `ui/`: `npm create amplify@latest` for Auth-only Gen 2 backend,
+   Vite + React, `aws-amplify` + `@aws-amplify/ui-react`.
+6. Configure the existing-REST-API pattern in the app pointing at
+   `api_base_url`; wrap the app in `<Authenticator>` using the real
+   `cognito_user_pool_id`/`cognito_user_pool_client_id` outputs.
+7. Build the v1 screens: bindings CRUD form + rule/parameter browser.
+8. Connect Amplify Hosting to a git branch (monorepo app root = `ui/`) for
+   CI/CD.
+9. Decide whether the Amplify app resource itself
+   (`aws_amplify_app`/`aws_amplify_branch`) should also be
+   Terraform-managed to match this project's IaC-first approach, or left
+   to Amplify's own Console/CLI-managed stack. Not decided yet — revisit
+   once step 8 is imminent.
