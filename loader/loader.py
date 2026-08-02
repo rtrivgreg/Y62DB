@@ -1,22 +1,99 @@
 #!/usr/bin/env python3
+"""
+Loader for the Y62DB single-table config-rule catalog.
+
+Parses AWS Config managed-rule metadata out of a config-rules-all-style
+Terraform module (``managed_rules_locals.tf`` + ``managed_rules_variables.tf``)
+and writes ``RULE_PROFILE`` and ``PARAMETER_DEF`` items directly into the
+single DynamoDB table described in ``schemas/access-patterns.md``.
+
+This supersedes the older two-table version of this script (see git
+history), which wrote flat rows into separate ``config_rules`` /
+``config_rule_parameters`` tables. That schema predates the single-table
+redesign and is not compatible with it -- CRUD tooling (``api/``) only
+ever reads/writes ``RULE_BINDING`` items in the single table, and expects
+canonical rule/parameter data to live there too. See ``docs/BLUEPRINT.md``
+for the full history and rationale behind this rewrite.
+
+Item shapes written (see schemas/access-patterns.md for the source of truth):
+
+    RULE_PROFILE
+        pk = RULE#<rule_id>
+        sk = PROFILE#<rule_id>
+
+    PARAMETER_DEF
+        pk = RULE#<rule_id>
+        sk = PARAMDEF#<parameter_name>
+
+Note on scope: parsed ``resource_types_scope`` values are currently kept as
+a plain ``scopes`` attribute on the RULE_PROFILE item rather than emitted as
+separate SCOPE_DEF items. The access-patterns doc defines a SCOPE_DEF entity
+type for "valid scope usage guidance," but doesn't specify how that maps
+from this source data (e.g. one SCOPE_DEF per resource type vs. one per
+rule), and the current parsed data only carries a single list of resource
+types per rule with no additional guidance/notes content. Rather than
+invent a shape, SCOPE_DEF population is deliberately deferred -- the scope
+data is not lost (it's still on RULE_PROFILE), but nothing here writes
+SCOPE_DEF items yet. Revisit this once there's a concrete access pattern
+that needs SCOPE_DEF specifically.
+"""
 import argparse
 import json
 import re
-from pathlib import Path
 import time
+from pathlib import Path
 
 import boto3
 import hcl2
-from pathlib import Path
 
 DEFAULT_LOCALS = "managed_rules_locals.tf"
 DEFAULT_VARIABLES = "managed_rules_variables.tf"
+
+
+def load_hcl(path: Path):
+    with path.open("r", encoding="utf-8") as f:
+        return hcl2.load(f)
+
 
 def load_variables_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def clean_string(value):
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
+def extract_input_var(value):
+    if not isinstance(value, str):
+        return None
+    value = clean_string(value)
+    if value.startswith("${var.") and value.endswith("}"):
+        return value[6:-1]
+    if value.startswith("var."):
+        return value[4:]
+    return None
+
+
+def load_managed_rules(locals_path: Path):
+    data = load_hcl(locals_path)
+    return data["locals"][0]["managed_rules"]
+
+
 def normalize_parameter_variables_from_text(params_text: str) -> dict:
+    """Recover optional-attribute metadata from raw HCL text.
+
+    Kept text-based (rather than relying solely on python-hcl2's parse of
+    ``variables.tf``) because ``managed_rules_variables.tf`` uses
+    ``optional(type, default)`` expressions inside ``object({...})`` type
+    blocks that python-hcl2 does not resolve cleanly on its own.
+    """
     var_pattern = re.compile(
         r'variable\s+"([A-Za-z0-9_]+)"\s*{(.*?)(?=^variable\s+"|\Z)',
         re.S | re.M,
@@ -65,51 +142,26 @@ def normalize_parameter_variables_from_text(params_text: str) -> dict:
         }
 
     return normalized
-def load_hcl(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        return hcl2.load(f)
-
-def clean_string(value):
-    if not isinstance(value, str):
-        return value
-    value = value.strip()
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        return value[1:-1]
-    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
-        return value[1:-1]
-    return value
 
 
-def extract_input_var(value):
-    if not isinstance(value, str):
-        return None
-    value = clean_string(value)
-    if value.startswith("${var.") and value.endswith("}"):
-        return value[6:-1]
-    if value.startswith("var."):
-        return value[4:]
-    return None
+def normalize_rules(managed_rules: dict) -> list[dict]:
+    """Normalize parsed locals into logical rule records.
 
-
-def load_managed_rules(locals_path: Path):
-    data = load_hcl(locals_path)
-    return data["locals"][0]["managed_rules"]
-
-
-def load_variables_text(variables_path: Path):
-    return variables_path.read_text(encoding="utf-8")
-
-
-def normalize_rules(managed_rules: dict):
+    ``rule_id`` here is the plain slug (e.g. ``access-keys-rotated``), with
+    no ``RULE#`` prefix -- the prefix is applied only when building the
+    actual DynamoDB pk/sk, matching the convention already used by the
+    CRUD API (see ``api/src/common/dynamodb.py``'s ``_pk``/``_gsi1sk``
+    helpers). The legacy version of this script baked the prefix directly
+    into the ``rule_id`` field, which does not match that convention.
+    """
     rules = []
     for rule_name, rule_def in managed_rules.items():
-        rule_name_clean = clean_string(rule_name)
+        rule_id = clean_string(rule_name)
         input_var = extract_input_var(rule_def.get("input_parameters"))
 
         rules.append(
             {
-                "rule_id": f"RULE#{rule_name_clean}",
-                "rule_name": rule_name_clean,
+                "rule_id": rule_id,
                 "source_identifier": clean_string(rule_def.get("identifier")),
                 "description": clean_string(rule_def.get("description", "")),
                 "severity": clean_string(rule_def.get("severity", "")),
@@ -120,39 +172,9 @@ def normalize_rules(managed_rules: dict):
     return rules
 
 
-def parse_variables_with_hcl(variables_path: Path):
-    data = load_hcl(variables_path)
-    out = {}
-
-    for var_block in data.get("variable", []):
-        for var_name, body in var_block.items():
-            if not var_name.endswith("_parameters"):
-                continue
-
-            attrs = []
-            type_obj = body.get("type")
-            defaults = body.get("default", {})
-
-            if isinstance(defaults, list) and defaults:
-                defaults = defaults[0]
-            if defaults is None:
-                defaults = {}
-            if not isinstance(defaults, dict):
-                defaults = {}
-
-            if isinstance(type_obj, str):
-                pass
-
-            out[var_name] = {
-                "attrs": attrs,
-                "default": {k: clean_string(v) for k, v in defaults.items()},
-            }
-
-    return out
-
-
-def build_parameter_items(rules, variable_defs):
-    items = []
+def build_parameter_records(rules: list[dict], variable_defs: dict) -> list[dict]:
+    """Build logical (pre-DynamoDB-shape) parameter records for each rule."""
+    records = []
 
     for rule in rules:
         input_var = rule.get("input_var")
@@ -166,15 +188,15 @@ def build_parameter_items(rules, variable_defs):
         seen = set()
 
         for key, value in defaults.items():
-            items.append(
+            records.append(
                 {
                     "rule_id": rule["rule_id"],
                     "parameter_name": key,
-                    "parameter_type": "string",
-                    "is_required": True,
+                    "data_type": "string",
+                    "required": True,
                     "default_value": "" if value is None else str(value),
-                    "placeholder_value": "" if value is None else str(value),
                     "source_variable": input_var,
+                    "placeholder_value": "" if value is None else str(value),
                 }
             )
             seen.add(key)
@@ -184,24 +206,69 @@ def build_parameter_items(rules, variable_defs):
             if name in seen:
                 continue
             default_value = attr.get("default")
-            items.append(
+            records.append(
                 {
                     "rule_id": rule["rule_id"],
                     "parameter_name": name,
-                    "parameter_type": attr.get("type", "string"),
-                    "is_required": False,
+                    "data_type": attr.get("type", "string"),
+                    "required": False,
                     "default_value": "" if default_value is None else str(default_value),
-                    "placeholder_value": "" if default_value is None else "optional_string",
                     "source_variable": input_var,
+                    "placeholder_value": "" if default_value is None else "optional_string",
                 }
             )
 
+    return records
+
+
+def build_rule_profile_items(rules: list[dict]) -> list[dict]:
+    """Map logical rule records to RULE_PROFILE DynamoDB items."""
+    items = []
+    for rule in rules:
+        rule_id = rule["rule_id"]
+        items.append(
+            {
+                "pk": f"RULE#{rule_id}",
+                "sk": f"PROFILE#{rule_id}",
+                "entity_type": "RULE_PROFILE",
+                "rule_id": rule_id,
+                "source_identifier": rule.get("source_identifier", ""),
+                "description": rule.get("description", ""),
+                "severity": rule.get("severity", ""),
+                "scopes": rule.get("scopes", []),
+                "managed_rule": True,
+            }
+        )
+    return items
+
+
+def build_parameter_def_items(parameter_records: list[dict]) -> list[dict]:
+    """Map logical parameter records to PARAMETER_DEF DynamoDB items."""
+    items = []
+    for record in parameter_records:
+        rule_id = record["rule_id"]
+        parameter_name = record["parameter_name"]
+        items.append(
+            {
+                "pk": f"RULE#{rule_id}",
+                "sk": f"PARAMDEF#{parameter_name}",
+                "entity_type": "PARAMETER_DEF",
+                "rule_id": rule_id,
+                "parameter_name": parameter_name,
+                "data_type": record.get("data_type", "string"),
+                "required": record.get("required", False),
+                "default_value": record.get("default_value", ""),
+                "source_variable": record.get("source_variable", ""),
+                "placeholder_value": record.get("placeholder_value", ""),
+            }
+        )
     return items
 
 
 SET_FIELDS = {"scopes"}
 
-def to_ddb_item(item: dict):
+
+def to_ddb_item(item: dict) -> dict:
     ddb = {}
 
     for k, v in item.items():
@@ -230,6 +297,7 @@ def to_ddb_item(item: dict):
                 ddb[k] = {"S": s}
 
     return ddb
+
 
 def chunked(seq, size):
     for i in range(0, len(seq), size):
@@ -269,58 +337,53 @@ def batch_write(client, table_name: str, items: list[dict], max_attempts: int = 
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Seed RULE_PROFILE and PARAMETER_DEF items into the Y62DB single table."
+    )
     parser.add_argument("--locals-file", default=DEFAULT_LOCALS)
     parser.add_argument("--variables-file", default=DEFAULT_VARIABLES)
-    parser.add_argument("--rules-table", required=True)
-    parser.add_argument("--parameters-table", required=True)
+    parser.add_argument(
+        "--table",
+        required=True,
+        help="Single DynamoDB table name, e.g. y62db-config-rule-catalog",
+    )
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--dump-json-dir")
     parser.add_argument("--rule-limit", type=int, default=0)
     args = parser.parse_args()
 
-    #managed_rules = load_managed_rules(Path(args.locals_file))
-    #variable_defs = parse_variables_with_hcl(Path(args.variables_file))
     managed_rules = load_managed_rules(Path(args.locals_file))
     variables_text = load_variables_text(Path(args.variables_file))
     variable_defs = normalize_parameter_variables_from_text(variables_text)
 
-    #rules = normalize_rules(managed_rules)[:10]
     rules = normalize_rules(managed_rules)
     if args.rule_limit > 0:
         rules = rules[:args.rule_limit]
-    parameters = build_parameter_items(rules, variable_defs)
-    
-    #print(f"variable_defs count: {len(variable_defs)}")
-    #print(json.dumps(variable_defs.get("workspaces_workspace_tagged_parameters"), indent=2))
-    managed_rules = load_managed_rules(Path(args.locals_file))
-    print("raw managed_rules count:", len(managed_rules))
-    
-    rules = normalize_rules(managed_rules)
-    print("normalized rules count:", len(rules))
-    
-    raw = managed_rules.get("access-keys-rotated")
-    print("raw access-keys-rotated:")
-    print(raw)
-    
-    matches = [r for r in rules if r.get("name") == "access-keys-rotated"]
-    print("normalized access-keys-rotated count:", len(matches))
-    print(json.dumps(matches, indent=2))
+
+    parameter_records = build_parameter_records(rules, variable_defs)
+
+    rule_profile_items = build_rule_profile_items(rules)
+    parameter_def_items = build_parameter_def_items(parameter_records)
+
+    print(f"rule_profile_items={len(rule_profile_items)} parameter_def_items={len(parameter_def_items)}")
+
     if args.dump_json_dir:
         outdir = Path(args.dump_json_dir)
         outdir.mkdir(parents=True, exist_ok=True)
-        (outdir / "rules.json").write_text(json.dumps(rules, indent=2), encoding="utf-8")
-        (outdir / "parameters.json").write_text(json.dumps(parameters, indent=2), encoding="utf-8")
-
-    print(f"rules={len(rules)} parameters={len(parameters)}")
+        (outdir / "rule_profile_items.json").write_text(
+            json.dumps(rule_profile_items, indent=2), encoding="utf-8"
+        )
+        (outdir / "parameter_def_items.json").write_text(
+            json.dumps(parameter_def_items, indent=2), encoding="utf-8"
+        )
 
     if args.dry_run:
         return
 
     ddb = boto3.client("dynamodb", region_name=args.region)
-    batch_write(ddb, args.rules_table, rules)
-    batch_write(ddb, args.parameters_table, parameters)
+    batch_write(ddb, args.table, rule_profile_items)
+    batch_write(ddb, args.table, parameter_def_items)
     print("load complete")
 
 
