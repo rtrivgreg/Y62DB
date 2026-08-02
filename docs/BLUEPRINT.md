@@ -314,15 +314,21 @@ unchanged.
 - **No API authentication configured.** Every method currently has
   `authorization = "NONE"`. This is fine for a first plan/apply smoke test,
   not fine to leave running unattended.
-- **Legacy tables confirmed live, not dead — and now migrated.** Verified
-  directly against AWS (`aws-dynamodb-scan`, `us-east-1`): `config_rules`
-  has **801 items**, `config_rule_parameters` has **669 items**, both in
-  the old flat schema (no `pk`/`sk`/`entity_type`). Neither is read by
-  anything in `api/`. Their data now has a single-table home: the
-  rewritten `loader/loader.py` seeded `y62db-config-rule-catalog` with 802
-  `RULE_PROFILE` + 670 `PARAMETER_DEF` items from the live
-  `config-rules-all` source, verified via direct scan/query (§11). The two
-  legacy tables themselves have not been touched or removed.
+- **Legacy tables confirmed live — owned by a separate application,
+  DO NOT TOUCH.** Verified directly against AWS (`aws-dynamodb-scan`,
+  `us-east-1`): `config_rules` has **801 items**, `config_rule_parameters`
+  has **669 items**, both in the old flat schema (no
+  `pk`/`sk`/`entity_type`). Neither is read by anything in this repo's
+  `api/` — **but they are an essential component of a separate Python
+  application that is not part of the Y62DB initiative** (confirmed by the
+  repo owner 2026-08-02). They must be retained as-is; not archived, not
+  deleted, not modified, regardless of anything Y62DB does. Y62DB's own
+  `loader/loader.py` now independently seeds equivalent data into
+  `y62db-config-rule-catalog` as `RULE_PROFILE`/`PARAMETER_DEF` items
+  (802 + 670, verified via direct scan/query, §11) — that is a parallel,
+  Y62DB-owned copy for the single-table schema, not a migration that
+  supersedes or retires the legacy tables. The two independent systems now
+  each have their own copy of similar data; keep them both.
 - **`terraform/` subfolder still orphaned** from Terraform Cloud state —
   standing drift risk, unrelated to but adjacent to this work.
 
@@ -353,11 +359,13 @@ unchanged.
 2. **API authentication.** Pick one before leaving this running beyond a
    smoke test: IAM auth, API key + usage plan, or a Lambda/Cognito
    authorizer.
-3. **Legacy two-table fate.** Migration to the single table is done and
-   verified (§11) — 802 `RULE_PROFILE` + 670 `PARAMETER_DEF` items now live
-   in `y62db-config-rule-catalog`. What's left is a decision, not a
-   migration: archive vs. delete `config_rules`/`config_rule_parameters`
-   and their Terraform resources. Still a human call — not done here.
+3. **Legacy two-table fate — RESOLVED, no action needed.** `config_rules`/
+   `config_rule_parameters` are owned by a separate, unrelated Python
+   application and must be retained permanently (confirmed by the repo
+   owner 2026-08-02). This is not a Y62DB decision to make. Y62DB has its
+   own equivalent data now in `y62db-config-rule-catalog` (§11) and has no
+   further business with these two tables or their Terraform resources —
+   don't revisit archiving/deleting them under this initiative.
 4. **`terraform/` subfolder reconciliation.** The real table's own
    definition still isn't under any Terraform Cloud state. Bringing it
    under management (e.g. `terraform import`) is a bigger, riskier future
@@ -496,8 +504,9 @@ rule relative to the current `config-rules-all` source, not a loader bug.
 2. Spot-check a few more rules beyond `access-keys-rotated` (ideally ones
    with multiple parameters, and at least one with zero parameters) if a
    higher confidence bar is wanted before treating this as fully proven.
-3. Now safe to revisit whether `config_rules`/`config_rule_parameters`
-   should be archived or deleted (§8.3) — the data they hold has a home in
-   the single table now, modulo the one-rule staleness noted above. Confirm
-   nothing else reads them (already checked — nothing in `api/` does)
-   before removing the Terraform resources.
+3. **Do not archive or delete `config_rules`/`config_rule_parameters`.**
+   Despite not being read by this repo's `api/`, they belong to a separate,
+   unrelated Python application (confirmed by the repo owner 2026-08-02)
+   and must be retained permanently. Y62DB's copy of this data in
+   `y62db-config-rule-catalog` is additional, not a replacement — treat
+   §8.3 as closed, not as a future cleanup task.

@@ -16,10 +16,13 @@ See [`docs/BLUEPRINT.md`](../docs/BLUEPRINT.md) for the fuller history.
 
 The two legacy tables (`config_rules`, 801 items; `config_rule_parameters`,
 669 items, confirmed live in `us-east-1` as of 2026-08-02) are not touched
-by this script and are not read by anything else in this repo. They're
-left in place until their data has been re-derived into the single table
-via this script and verified — see BLUEPRINT.md's next-steps section for
-that migration plan.
+by this script and are not read by anything else in this repo. **They are
+not Y62DB's to manage** — they belong to a separate, unrelated Python
+application and must be retained permanently regardless of anything this
+repo does (confirmed by the repo owner 2026-08-02). This loader creates an
+additional, independent copy of similar data in the single table for
+Y62DB's own use — it is not a migration that supersedes or retires the
+legacy tables. See `docs/BLUEPRINT.md` §11 for the full history.
 
 ## Setup
 
