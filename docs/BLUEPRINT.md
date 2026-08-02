@@ -997,3 +997,47 @@ the race and the fix's correctness; `npm run build` (`tsc --noEmit` +
 `vite build`) — succeeds cleanly, no type errors. No backend/Terraform
 changes; the §12.6 fuzzy threshold and §12.7 too-broad picker UX are
 unchanged — only response ordering is now guarded.
+
+### §12.10 — Fix: GET /rules leaked catalog-only rules with zero bindings (2026-08-02)
+
+**Bug report:** after §12.9 fixed the search-result race, searching "s3"
+correctly returned 30 real `s3-*` AWS Config rule names, but the UI
+showed "0 binding(s) found" for all of them and no clickable candidates
+at all.
+
+**Root cause:** `list_distinct_rule_ids()` (`api/src/common/dynamodb.py`,
+backs `GET /rules`) filtered candidates on `pk.startswith("RULE#")`
+alone. That was a safe signal only because, at the time it was written,
+`RULE_BINDING` was the *only* entity type in the table using that pk
+prefix. The §11 loader rewrite (same day) seeded 802 `RULE_PROFILE`
+items (`sk="PROFILE#<ruleId>"`) and 670 `PARAMETER_DEF` items
+(`sk="PARAMDEF#<parameterName>"`) into this same table — both also using
+`pk="RULE#<ruleId>"`. From that point on, `GET /rules` silently started
+returning the *entire* rule catalog (minus items it happened to overlap
+with) instead of just rules that actually have a binding, because
+nothing checked `sk`. `GET /rules/{ruleId}/bindings` itself was always
+correct (it queries by `pk` and only ever returns real `RULE_BINDING`
+items) — so the catalog-only candidates the picker showed genuinely had
+zero bindings, which is exactly why every lookup returned nothing.
+`list_distinct_groups()` (`GET /groups`) is unaffected: only
+`RULE_BINDING` items use the `sk` prefix `"GROUP#"` — `RULE_PROFILE`/
+`PARAMETER_DEF` don't collide there.
+
+**Fix (`api/src/common/dynamodb.py`):** `list_distinct_rule_ids()` now
+also checks `sk.startswith("GROUP#") and "#BINDING#" in sk` before
+counting a `pk` as a bound rule — matching the exact `sk` shape
+`_sk()` produces for real `RULE_BINDING` items. Catalog-only
+`RULE_PROFILE`/`PARAMETER_DEF` items sharing the same `pk` are now
+correctly excluded.
+
+**Validation performed:** added
+`test_list_rule_ids_excludes_catalog_only_rules` to
+`api/tests/test_list_ids.py` — plants a real binding for one rule plus
+`RULE_PROFILE`/`PARAMETER_DEF` items (mimicking the real loader's
+output) for other rules sharing the same `pk` prefix, and asserts only
+the genuinely-bound rule comes back. Confirmed this test fails against
+the pre-fix code (the catalog-only rule leaks into the result) and
+passes after the fix. Full suite: `python -m pytest api/tests/` — 16/16
+passed (was 15 before this test was added). `npm run build`
+(`tsc --noEmit` + `vite build`) — succeeds cleanly; no UI code changed
+for this fix, only the backend candidate list.

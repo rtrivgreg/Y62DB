@@ -182,22 +182,28 @@ def update_binding(rule_id: str, group: str, binding: str, payload: dict, expect
 def list_distinct_rule_ids() -> list:
     """GET /rules — every rule ID that has at least one binding.
 
-    There's no dedicated rule-catalog data source yet (that's separate,
-    larger scope — see docs/BLUEPRINT.md §12 roadmap step 7's open half).
-    This treats "rules with at least one binding in
-    y62db-config-rule-catalog" as the searchable universe for now, which is
-    what the UI's client-side fuzzy rule-ID search needs candidates for.
+    IMPORTANT (see docs/BLUEPRINT.md §12.10): since the §11 loader rewrite
+    seeded `RULE_PROFILE` (sk="PROFILE#<ruleId>") and `PARAMETER_DEF`
+    (sk="PARAMDEF#<parameterName>") items into this same table, `pk`
+    alone ("RULE#<ruleId>") is no longer a reliable signal that a rule has
+    a real binding — the whole ~802-rule catalog now shares that pk
+    prefix. Only `RULE_BINDING` items use the sk shape
+    "GROUP#<group>#BINDING#<binding>" (see `_sk` above), so both `pk` and
+    `sk` must be checked to return just rules with an actual binding, not
+    every catalog rule.
+
     Does a full table Scan (paginated internally) and dedupes by pk — fine
     at this table's current size, but would need a smarter approach (a
-    dedicated GSI or a real rule catalog) if the table grows large.
+    dedicated GSI) if the table grows large.
     """
     rule_ids = set()
-    kwargs = {"ProjectionExpression": "pk"}
+    kwargs = {"ProjectionExpression": "pk, sk"}
     while True:
         result = _table.scan(**kwargs)
         for item in result.get("Items", []):
             pk = item.get("pk", "")
-            if pk.startswith("RULE#"):
+            sk = item.get("sk", "")
+            if pk.startswith("RULE#") and sk.startswith("GROUP#") and "#BINDING#" in sk:
                 rule_ids.add(pk.split("RULE#", 1)[1])
         last_key = result.get("LastEvaluatedKey")
         if not last_key:
