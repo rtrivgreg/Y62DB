@@ -824,10 +824,17 @@ binding under it).
   sets.
 - `npm run build` (`tsc --noEmit` + `vite build`) — succeeds cleanly, no
   type errors.
-- **Not yet applied to live AWS.** This change touches Terraform (new
-  IAM `Scan` permission + two new API Gateway routes), so it requires a
-  manual `terraform apply` in Terraform Cloud (org `RSHL2136`, workspace
-  `Y62DB`) or via CLI — there is no Terraform Cloud connector available
-  to the agent. Until that apply runs, `GET /rules`/`GET /groups` don't
-  exist live yet and the new frontend search code will fail (404/403)
-  against the real API.
+- **Applied to live AWS (2026-08-02).** User ran `terraform apply` in
+  Terraform Cloud (org `RSHL2136`, workspace `Y62DB`); run confirmed, new
+  state version created. Verified post-apply by hitting both new routes
+  without an auth token: `GET /rules` and `GET /groups` both return
+  `401 {"message":"Unauthorized"}` (the Cognito authorizer rejecting a
+  missing token), the same behavior as the pre-existing
+  `GET /rules/{ruleId}/bindings` route — confirming both are correctly
+  wired end-to-end (API Gateway resource + Cognito authorizer + Lambda
+  integration), as opposed to the distinct "Missing Authentication Token"
+  error API Gateway returns for a path that doesn't match any deployed
+  resource. Not yet interactively verified with a real signed-in token
+  against live data (that requires the UI + a Cognito login, which the
+  agent doesn't have credentials for) — worth a quick pass in the browser
+  before calling this fully done.
