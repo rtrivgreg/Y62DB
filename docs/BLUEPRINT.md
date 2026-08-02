@@ -891,3 +891,25 @@ of API calls at once.
 - No backend changes in this fix, so no Terraform/apply implications —
   this is pushable and effective immediately once pulled, no
   `terraform apply` needed.
+
+### §12.7 — UX fix: broad-match picker instead of a dead-end error (2026-08-02)
+
+**Follow-up report:** searching a common AWS service prefix like `EC2`
+or `S3` "crashed" — in practice this was the §12.6 `MAX_FANOUT` guardrail
+correctly refusing to fetch 79 rule IDs' worth of bindings at once, but
+surfacing that refusal as a hard error with zero results was a dead end
+for a perfectly reasonable, legitimately-broad query (there really are
+~79 real `ec2-*` rules in the catalog).
+
+**Fix (`ui/src/pages/BindingsBrowser.tsx`):** when the match count
+exceeds `MAX_FANOUT`, the UI no longer shows a blocking error. Instead
+it renders the full matched-candidate list as clickable buttons; clicking
+one fetches and merges in just that candidate's bindings (deduped by
+rule/group/binding key), so the user can drill into as many of the
+matches as they actually want, in whatever order, without the app ever
+auto-firing dozens of concurrent lookups. Narrowing the query still works
+as before and returns straight to the automatic fetch-all path once the
+match count drops back under the cap.
+
+**Validation performed:** `npm run build` (`tsc --noEmit` + `vite
+build`) — succeeds cleanly, no type errors. No backend/Terraform changes.

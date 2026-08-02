@@ -40,12 +40,46 @@ export function BindingsBrowser() {
   const [formState, setFormState] = useState<FormState>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [matchedCandidates, setMatchedCandidates] = useState<string[] | null>(null);
+  // True when the last search matched more candidates than we're willing to
+  // fan out automatically (see MAX_FANOUT below) — renders a clickable
+  // picker instead of an error, so a legitimately broad query (e.g. a
+  // service prefix like "ec2" or "s3" matching dozens of real rules) is
+  // still browsable rather than a dead end.
+  const [tooBroad, setTooBroad] = useState(false);
 
   // Guardrail: this table can hold hundreds of real rule IDs/groups (not
   // just test fixtures), so a broad fuzzy match could fan out to hundreds
-  // of individual API calls. Rather than hammering the API, ask for a more
-  // specific query once the match set gets unreasonably large.
+  // of individual API calls. Rather than hammering the API, show the
+  // matched candidates as a clickable picker once the match set gets
+  // unreasonably large, instead of auto-fetching all of them.
   const MAX_FANOUT = 40;
+
+  function bindingKey(b: Binding): string {
+    return `${b.rule_id}#${b.group}#${b.binding}`;
+  }
+
+  /** Fetch bindings for a single candidate (from the too-broad picker) and merge into results, deduping. */
+  async function fetchOneCandidate(candidate: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      const data =
+        mode === "rule" ? await listBindingsForRule(candidate) : await listBindingsForGroup(candidate);
+      setResults((prev) => {
+        const existingKeys = new Set((prev ?? []).map(bindingKey));
+        const additions = data.filter((b) => !existingKeys.has(bindingKey(b)));
+        return [...(prev ?? []), ...additions];
+      });
+    } catch (err) {
+      if (err instanceof BindingsApiError) {
+        setError(`${err.code} (HTTP ${err.status}): ${err.message}`);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function runSearch() {
     const q = query.trim();
@@ -53,6 +87,7 @@ export function BindingsBrowser() {
     setLoading(true);
     setError(null);
     setMatchedCandidates(null);
+    setTooBroad(false);
     try {
       const candidates = mode === "rule" ? await listAllRuleIds() : await listAllGroups();
       const matches = fuzzyFilter(q, candidates);
@@ -65,10 +100,7 @@ export function BindingsBrowser() {
 
       if (matches.length > MAX_FANOUT) {
         setResults(null);
-        setError(
-          `Query matched ${matches.length} ${mode === "rule" ? "rule ID(s)" : "group(s)"} — too broad to ` +
-            `fetch all at once. Try a longer or more specific query.`,
-        );
+        setTooBroad(true);
         return;
       }
 
@@ -203,11 +235,28 @@ export function BindingsBrowser() {
         />
       )}
 
-      {matchedCandidates && (
+      {matchedCandidates && !tooBroad && (
         <p style={{ color: "#555", fontSize: "0.9em" }}>
           Fuzzy-matched {mode === "rule" ? "rule ID(s)" : "group(s)"}:{" "}
           {matchedCandidates.length > 0 ? matchedCandidates.join(", ") : "none"}
         </p>
+      )}
+
+      {matchedCandidates && tooBroad && (
+        <div style={{ marginBottom: "1rem" }}>
+          <p style={{ color: "#555" }}>
+            {matchedCandidates.length} {mode === "rule" ? "rule ID(s)" : "group(s)"} matched — too many
+            to fetch all at once. Click one below to see its bindings (click several to build up the
+            table), or narrow your search.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+            {matchedCandidates.map((c) => (
+              <button key={c} type="button" onClick={() => fetchOneCandidate(c)} disabled={loading}>
+                {c}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {results && (
@@ -225,7 +274,7 @@ export function BindingsBrowser() {
             </thead>
             <tbody>
               {results.map((b) => (
-                <tr key={`${b.rule_id}#${b.group}#${b.binding}`} style={{ borderBottom: "1px solid #eee" }}>
+                <tr key={bindingKey(b)} style={{ borderBottom: "1px solid #eee" }}>
                   <td>{b.rule_id}</td>
                   <td>{b.group}</td>
                   <td>{b.binding}</td>
