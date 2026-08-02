@@ -314,13 +314,15 @@ unchanged.
 - **No API authentication configured.** Every method currently has
   `authorization = "NONE"`. This is fine for a first plan/apply smoke test,
   not fine to leave running unattended.
-- **Legacy tables confirmed live, not dead.** Verified directly against AWS
-  (`aws-dynamodb-scan`, `us-east-1`): `config_rules` has **801 items**,
-  `config_rule_parameters` has **669 items**, both in the old flat schema
-  (no `pk`/`sk`/`entity_type`). Neither is read by anything in `api/` — the
-  CRUD API only ever touches `RULE_BINDING` items in
-  `y62db-config-rule-catalog`. See §11 for what this means for seeding and
-  the loader rewrite it prompted.
+- **Legacy tables confirmed live, not dead — and now migrated.** Verified
+  directly against AWS (`aws-dynamodb-scan`, `us-east-1`): `config_rules`
+  has **801 items**, `config_rule_parameters` has **669 items**, both in
+  the old flat schema (no `pk`/`sk`/`entity_type`). Neither is read by
+  anything in `api/`. Their data now has a single-table home: the
+  rewritten `loader/loader.py` seeded `y62db-config-rule-catalog` with 802
+  `RULE_PROFILE` + 670 `PARAMETER_DEF` items from the live
+  `config-rules-all` source, verified via direct scan/query (§11). The two
+  legacy tables themselves have not been touched or removed.
 - **`terraform/` subfolder still orphaned** from Terraform Cloud state —
   standing drift risk, unrelated to but adjacent to this work.
 
@@ -351,12 +353,11 @@ unchanged.
 2. **API authentication.** Pick one before leaving this running beyond a
    smoke test: IAM auth, API key + usage plan, or a Lambda/Cognito
    authorizer.
-3. **Legacy two-table fate.** Confirmed live with real data (801 + 669
-   items, §7) — not a dead-weight cleanup question anymore, but a
-   migration question: that data needs to become `RULE_PROFILE`/
-   `PARAMETER_DEF` items in `y62db-config-rule-catalog` (via the rewritten
-   `loader/loader.py`, §11) before the legacy tables are safe to retire.
-   Don't delete them until that migration is verified complete.
+3. **Legacy two-table fate.** Migration to the single table is done and
+   verified (§11) — 802 `RULE_PROFILE` + 670 `PARAMETER_DEF` items now live
+   in `y62db-config-rule-catalog`. What's left is a decision, not a
+   migration: archive vs. delete `config_rules`/`config_rule_parameters`
+   and their Terraform resources. Still a human call — not done here.
 4. **`terraform/` subfolder reconciliation.** The real table's own
    definition still isn't under any Terraform Cloud state. Bringing it
    under management (e.g. `terraform import`) is a bigger, riskier future
@@ -456,33 +457,47 @@ invent a shape, parsed scope values are kept as a `scopes` attribute on
 
 ### Validation performed
 
-The real `config-rules-all` vendor files live only on the user's local
-machine (`~/code/t/config-rules-all`, per prior session notes), not in this
-workspace, so the rewrite was validated against a small synthetic fixture
-instead: `loader/tests/fixtures/` (two rules, one with a parameter block) +
+Unit-level: the rewrite was validated against a small synthetic fixture
+(`loader/tests/fixtures/`, two rules, one with a parameter block) +
 `loader/tests/test_loader.py` (6 tests — rule-id shape, item shape for both
 entity types, empty-parameter case, DynamoDB type-mapping for sets/bools,
-`--rule-limit`). All 6 passed. `--dry-run --dump-json-dir` was also run
-end-to-end against the fixture and the output inspected manually.
+`--rule-limit`). All 6 passed.
 
-**Not yet validated:** a real run against the actual ~800-rule
-`config-rules-all` source, and a real write into `y62db-config-rule-catalog`.
-Both require the local vendor files and should be done from a trusted
-environment with AWS credentials — see `loader/README.md` for the exact
-command.
+**Real migration: done (2026-08-02), from the user's machine.** The loader
+was run for real against the actual `config-rules-all` vendor files
+(`~/code/t/config-rules-all`) and wrote directly into
+`y62db-config-rule-catalog` in `us-east-1`:
+
+```
+rule_profile_items=802 parameter_def_items=670
+```
+
+Independently verified via direct DynamoDB scans/queries afterward:
+
+- **802 `RULE_PROFILE` items**, all with unique `pk`s (one per rule, no
+  duplicates, no gaps vs. the loader's own reported count).
+- **670 `PARAMETER_DEF` items** across **412 distinct rules** (87 of those
+  rules have more than one parameter; the rest have exactly one) — totals
+  match the loader's own output exactly.
+- `Query(pk=RULE#access-keys-rotated)` returns all three items together —
+  the pre-existing `RULE_BINDING` (`GROUP#corp#BINDING#default`), plus the
+  newly-written `RULE_PROFILE` and `PARAMETER_DEF` — confirming access
+  pattern #1 in `access-patterns.md` works end-to-end and that seeding did
+  not disturb the existing binding data.
+
+Note: 802/670 is one more than each of the legacy tables' counts (801
+rules / 669 parameters, §7) — the legacy tables are simply stale by one
+rule relative to the current `config-rules-all` source, not a loader bug.
 
 ### Next steps for this specific track
 
-1. Run `loader/loader.py --dry-run --dump-json-dir out` against the real
-   `config-rules-all` vendor files locally; spot-check `out/*.json`.
-2. Run it for real against `y62db-config-rule-catalog`.
-3. Verify with `Query(pk=RULE#<some_id>)` that `RULE_PROFILE` +
-   `PARAMETER_DEF` + any existing `RULE_BINDING` for that rule all come back
-   together (access pattern #1 in `access-patterns.md`).
-4. Only after that's verified: revisit whether `config_rules`/
-   `config_rule_parameters` should be archived or deleted (§8.3). Don't
-   skip straight to deletion — confirm the migrated data first.
-5. `loader/loader.py`, `loader/README.md`, and `loader/tests/` were
-   committed together with this documentation update. Steps 1–4 above are
-   still outstanding as of that commit — confirm via `git log` whether
-   they've happened since.
+1. ~~Run against the real `config-rules-all` source and seed
+   `y62db-config-rule-catalog`.~~ **Done and verified**, see above.
+2. Spot-check a few more rules beyond `access-keys-rotated` (ideally ones
+   with multiple parameters, and at least one with zero parameters) if a
+   higher confidence bar is wanted before treating this as fully proven.
+3. Now safe to revisit whether `config_rules`/`config_rule_parameters`
+   should be archived or deleted (§8.3) — the data they hold has a home in
+   the single table now, modulo the one-rule staleness noted above. Confirm
+   nothing else reads them (already checked — nothing in `api/` does)
+   before removing the Terraform resources.
