@@ -27,6 +27,11 @@ import { BindingForm } from "../components/BindingForm";
  * merges everything into one results table. That fan-out is why the same
  * rule ID (or group) can appear more than once in the results — once per
  * binding under it.
+ *
+ * The fan-out is chunked (see FANOUT_BATCH_SIZE and docs/BLUEPRINT.md
+ * §12.8) so a broad match doesn't fire dozens of concurrent Lambda
+ * invocations at once against a possibly low account-level concurrency
+ * quota.
  */
 
 type FormState = { mode: "create" } | { mode: "edit"; existing: Binding } | null;
@@ -53,6 +58,33 @@ export function BindingsBrowser() {
   // matched candidates as a clickable picker once the match set gets
   // unreasonably large, instead of auto-fetching all of them.
   const MAX_FANOUT = 40;
+
+  // Even a match set within MAX_FANOUT fires one Lambda invocation per
+  // candidate. Firing all of them in parallel can saturate a low
+  // account-level Lambda concurrent-executions quota (see
+  // docs/BLUEPRINT.md §12.8 — this happened in production), so the fan-out
+  // is chunked into sequential batches of this size instead of one big
+  // Promise.allSettled over everything.
+  const FANOUT_BATCH_SIZE = 6;
+
+  /**
+   * Runs `fetcher` over `items` in sequential batches of FANOUT_BATCH_SIZE
+   * concurrent calls, returning per-item settled outcomes in the same
+   * order as `items` (so callers can still zip results back to their
+   * source candidate by index).
+   */
+  async function fetchInBatches<T>(
+    items: string[],
+    fetcher: (item: string) => Promise<T>,
+  ): Promise<PromiseSettledResult<T>[]> {
+    const outcomes: PromiseSettledResult<T>[] = [];
+    for (let i = 0; i < items.length; i += FANOUT_BATCH_SIZE) {
+      const batch = items.slice(i, i + FANOUT_BATCH_SIZE);
+      const batchOutcomes = await Promise.allSettled(batch.map(fetcher));
+      outcomes.push(...batchOutcomes);
+    }
+    return outcomes;
+  }
 
   function bindingKey(b: Binding): string {
     return `${b.rule_id}#${b.group}#${b.binding}`;
@@ -106,12 +138,14 @@ export function BindingsBrowser() {
 
       // Fan out an exact-match lookup per fuzzy-matched candidate and merge.
       // A given rule ID / group can have several bindings, so it can
-      // contribute more than one row here. Uses allSettled (not all) so a
-      // single failed lookup among many concurrent ones doesn't wipe out an
-      // otherwise-successful batch with a generic error — we surface
-      // partial results plus a note about what failed instead.
-      const outcomes = await Promise.allSettled(
-        matches.map((c) => (mode === "rule" ? listBindingsForRule(c) : listBindingsForGroup(c))),
+      // contribute more than one row here. Chunked into batches of
+      // FANOUT_BATCH_SIZE (rather than one giant Promise.allSettled) to cap
+      // concurrent Lambda invocations; allSettled per batch means a single
+      // failed lookup among many doesn't wipe out an otherwise-successful
+      // batch with a generic error — we surface partial results plus a
+      // note about what failed instead.
+      const outcomes = await fetchInBatches(matches, (c) =>
+        mode === "rule" ? listBindingsForRule(c) : listBindingsForGroup(c),
       );
 
       const merged: Binding[] = [];

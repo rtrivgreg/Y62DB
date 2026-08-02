@@ -913,3 +913,41 @@ match count drops back under the cap.
 
 **Validation performed:** `npm run build` (`tsc --noEmit` + `vite
 build`) — succeeds cleanly, no type errors. No backend/Terraform changes.
+
+### §12.8 — Chunk fan-out to protect Lambda concurrency quota (2026-08-02)
+
+**Incident:** on the same day as §12.5–§12.7, AWS sent an
+`AWS_SERVICEQUOTAS_INCREASE_REQUEST_FAILED` Health event for account
+418295699841 (us-east-1): the Lambda **Concurrent executions** quota
+(`L-B99A9384`) hit 100% utilization, and the automatic auto-adjust
+increase request AWS tried on the account's behalf was not approved.
+The account's applied quota for this value was only **10** (well below
+the AWS default of 1,000) — easily saturated by a single broad fuzzy
+search, whose fan-out (up to `MAX_FANOUT = 40` matches, more before the
+§12.6 fix) fires one Lambda invocation per matched candidate. The timing
+lines up with the §12.6 bug report (a pathological short-query match
+fanning out ~130 concurrent invocations before that fix shipped),
+making it the most likely trigger.
+
+**Remediation (outside this repo):** a manual quota increase to 100 for
+`L-B99A9384` was submitted via the Service Quotas console (manual
+requests get human review and can succeed even when an auto-adjust
+attempt for the same quota didn't).
+
+**Defensive fix (`ui/src/pages/BindingsBrowser.tsx`):** added a
+`fetchInBatches()` helper and `FANOUT_BATCH_SIZE = 6` constant. The
+fan-out lookup in `runSearch()` now runs matched candidates through this
+helper — sequential batches of 6 concurrent lookups each — instead of a
+single `Promise.allSettled` over the full match set (up to 40 at once).
+Per-item settled outcomes are still returned in original candidate
+order, so the existing partial-failure reporting (`failed.join(", ")`)
+is unaffected. This caps this feature's contribution to account-level
+Lambda concurrency at 6 in-flight invocations regardless of how broad a
+match is, independent of whatever the account's applied quota ends up
+being after the increase request above.
+
+**Validation performed:** `npm run build` (`tsc --noEmit` + `vite
+build`) — succeeds cleanly, no type errors. No backend/Terraform
+changes; behavior of the too-broad picker (§12.7) and short-query guard
+(§12.6) is unchanged, only the fetch-all path's concurrency pattern
+changed.
