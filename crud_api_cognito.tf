@@ -35,6 +35,13 @@ resource "aws_cognito_user_pool_client" "rule_catalog_ui" {
   explicit_auth_flows = [
     "ALLOW_USER_SRP_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
+    # ALLOW_USER_PASSWORD_AUTH is added purely so a bearer token can be
+    # obtained with a plain `aws cognito-idp initiate-auth` CLI call for
+    # smoke-testing, without needing an SRP-capable client library. The
+    # real Amplify frontend will still use SRP via <Authenticator> —
+    # this doesn't replace that, it just adds a second supported flow on
+    # the same client.
+    "ALLOW_USER_PASSWORD_AUTH",
   ]
 
   access_token_validity  = 1

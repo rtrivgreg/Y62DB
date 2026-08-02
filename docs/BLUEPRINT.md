@@ -312,15 +312,24 @@ unchanged.
 
 - **Committed and pushed** to `rtrivgreg/Y62DB`, `main` branch, commit
   `779dd7f` (on top of `e400dfd`).
-- **Not yet applied.** No `terraform plan` or `apply` has been run against
-  the `RSHL2136`/`Y62DB` Terraform Cloud workspace for this change. Nothing
-  has been created in AWS yet by this stack.
-- **API authentication: Cognito, wired but not yet applied.** All six
-  data-touching methods now require `authorization = "COGNITO_USER_POOLS"`
+- **APPLIED (2026-08-02).** The IAM policy in
+  `docs/policies/tfc-run-role-additions.json` was attached to the TFC run
+  role and a real `plan`/`apply` succeeded in the `RSHL2136`/`Y62DB`
+  workspace. This stack is now live in AWS:
+  - `api_base_url` = `https://3lkxt728eh.execute-api.us-east-1.amazonaws.com/dev`
+  - `lambda_function_name` = `y62db-rule-catalog-api-dev`
+  - `cognito_user_pool_id` = `us-east-1_5OUP1L4hf`
+  - `cognito_user_pool_client_id` = `2eruh11a9kc2lbdd286q282ofb`
+  - Confirmed **zero diff** on `config_rules`/`config_rule_parameters`
+    (both showed as no-op in the apply) and on the real
+    `y62db-config-rule-catalog` table (still a read-only `data` source).
+- **API authentication: Cognito, applied and verified live.** All six
+  data-touching methods require `authorization = "COGNITO_USER_POOLS"`
   via `aws_api_gateway_authorizer.cognito` (`crud_api_cognito.tf`, §12.1).
-  `OPTIONS` methods stay `NONE` (required for CORS preflight). This closes
-  §8.2 as a decision, but like everything else in this stack it has never
-  been applied — nothing Cognito-related exists in AWS yet either.
+  Verified directly against the live endpoint: no `Authorization` header
+  → `401 {"message":"Unauthorized"}`; garbage token → same `401`;
+  `OPTIONS` preflight → `200` with no auth required. Closes §8.2 for real,
+  not just on paper.
 - **Legacy tables confirmed live — owned by a separate application,
   DO NOT TOUCH.** Verified directly against AWS (`aws-dynamodb-scan`,
   `us-east-1`): `config_rules` has **801 items**, `config_rule_parameters`
@@ -370,10 +379,11 @@ unchanged.
    itself lives outside this stack's own state). If missing, the plan will
    apply the easy resources and then fail partway through. **Do this before
    triggering apply.**
-2. **API authentication — RESOLVED, not yet applied.** Cognito User Pool +
+2. **API authentication — RESOLVED and APPLIED.** Cognito User Pool +
    authorizer chosen (§12.1) specifically because it doubles as the
    Amplify frontend's Auth category later — one identity source for both
-   the API and the UI. Still needs a real `apply` before it does anything.
+   the API and the UI. Live and verified rejecting unauthenticated
+   requests (see §7).
 3. **Legacy two-table fate — RESOLVED, no action needed.** `config_rules`/
    `config_rule_parameters` are owned by a separate, unrelated Python
    application and must be retained permanently (confirmed by the repo
