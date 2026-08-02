@@ -28,10 +28,15 @@ resource "aws_iam_role_policy" "crud_api_lambda_dynamodb" {
         "dynamodb:PutItem",
         "dynamodb:DeleteItem",
         "dynamodb:Query",
+        "dynamodb:Scan",
       ]
       # Scoped to the existing y62db-config-rule-catalog table + its
       # gsi1-group-bindings index only — least-privilege, no wildcard ARNs,
       # no table-creation permissions (this stack never manages the table).
+      # Scan added for GET /rules and GET /groups (list_distinct_rule_ids /
+      # list_distinct_groups) — there's no GSI that enumerates distinct
+      # rule IDs or groups directly, so those two read-only endpoints scan
+      # the base table and dedupe in the Lambda.
       Resource = [
         local.dynamodb_table_arn,
         local.dynamodb_gsi1_arn,

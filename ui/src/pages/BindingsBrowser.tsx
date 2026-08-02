@@ -3,9 +3,12 @@ import {
   Binding,
   BindingsApiError,
   deleteBinding,
+  listAllGroups,
+  listAllRuleIds,
   listBindingsForGroup,
   listBindingsForRule,
 } from "../api/bindingsApi";
+import { fuzzyFilter } from "../fuzzyMatch";
 import { BindingForm } from "../components/BindingForm";
 
 /**
@@ -15,6 +18,15 @@ import { BindingForm } from "../components/BindingForm";
  *
  * The RULE_PROFILE/PARAMETER_DEF read-only browser is a separate, later
  * step and isn't part of this screen.
+ *
+ * Search is typo-tolerant (see docs/BLUEPRINT.md §12.5 and ../fuzzyMatch):
+ * it fetches every distinct rule ID / group that has at least one binding
+ * (`GET /rules` or `GET /groups`), fuzzy-matches the query against that
+ * list client-side, then fans out an exact-match lookup
+ * (`listBindingsForRule`/`listBindingsForGroup`) per matched candidate and
+ * merges everything into one results table. That fan-out is why the same
+ * rule ID (or group) can appear more than once in the results — once per
+ * binding under it.
  */
 
 type FormState = { mode: "create" } | { mode: "edit"; existing: Binding } | null;
@@ -27,15 +39,31 @@ export function BindingsBrowser() {
   const [loading, setLoading] = useState(false);
   const [formState, setFormState] = useState<FormState>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [matchedCandidates, setMatchedCandidates] = useState<string[] | null>(null);
 
   async function runSearch() {
-    if (!query.trim()) return;
+    const q = query.trim();
+    if (!q) return;
     setLoading(true);
     setError(null);
+    setMatchedCandidates(null);
     try {
-      const data =
-        mode === "rule" ? await listBindingsForRule(query.trim()) : await listBindingsForGroup(query.trim());
-      setResults(data);
+      const candidates = mode === "rule" ? await listAllRuleIds() : await listAllGroups();
+      const matches = fuzzyFilter(q, candidates);
+      setMatchedCandidates(matches);
+
+      if (matches.length === 0) {
+        setResults([]);
+        return;
+      }
+
+      // Fan out an exact-match lookup per fuzzy-matched candidate and merge.
+      // A given rule ID / group can have several bindings, so it can
+      // contribute more than one row here.
+      const perCandidate = await Promise.all(
+        matches.map((c) => (mode === "rule" ? listBindingsForRule(c) : listBindingsForGroup(c))),
+      );
+      setResults(perCandidate.flat());
     } catch (err) {
       if (err instanceof BindingsApiError) {
         setError(`${err.code} (HTTP ${err.status}): ${err.message}`);
@@ -138,6 +166,13 @@ export function BindingsBrowser() {
           onSaved={() => handleSaved("updated")}
           onCancel={() => setFormState(null)}
         />
+      )}
+
+      {matchedCandidates && (
+        <p style={{ color: "#555", fontSize: "0.9em" }}>
+          Fuzzy-matched {mode === "rule" ? "rule ID(s)" : "group(s)"}:{" "}
+          {matchedCandidates.length > 0 ? matchedCandidates.join(", ") : "none"}
+        </p>
       )}
 
       {results && (

@@ -15,12 +15,16 @@ Route table (kept in sync with README.md's API contract):
     PUT    /rules/{ruleId}/bindings/{group}/{binding} -> bindings.update.handle
     DELETE /rules/{ruleId}/bindings/{group}/{binding} -> bindings.delete.handle
     GET    /groups/{group}/bindings                  -> bindings.list_by_group.handle
+    GET    /rules                                    -> rules.list_ids.handle
+    GET    /groups                                   -> groups.list_ids.handle
 """
 import logging
 
 from bindings import create, delete, get, list_by_group, list_by_rule, update
 from common import response
 from common.exceptions import ApiError
+from groups import list_ids as groups_list_ids
+from rules import list_ids as rules_list_ids
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -32,6 +36,8 @@ ROUTES = {
     ("PUT", "/rules/{ruleId}/bindings/{group}/{binding}"): update.handle,
     ("DELETE", "/rules/{ruleId}/bindings/{group}/{binding}"): delete.handle,
     ("GET", "/groups/{group}/bindings"): list_by_group.handle,
+    ("GET", "/rules"): rules_list_ids.handle,
+    ("GET", "/groups"): groups_list_ids.handle,
 }
 
 

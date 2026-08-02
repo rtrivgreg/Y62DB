@@ -172,3 +172,21 @@ export async function deleteBinding(
   );
   await parseEnvelope<null>(res);
 }
+
+/**
+ * GET /rules — every distinct rule ID that has at least one binding.
+ * Candidate list for client-side fuzzy rule-ID search (see `../fuzzyMatch`).
+ */
+export async function listAllRuleIds(): Promise<string[]> {
+  const res = await authorizedFetch("/rules");
+  return (await parseEnvelope<string[]>(res)) ?? [];
+}
+
+/**
+ * GET /groups — every distinct group that has at least one binding.
+ * Candidate list for client-side fuzzy group search.
+ */
+export async function listAllGroups(): Promise<string[]> {
+  const res = await authorizedFetch("/groups");
+  return (await parseEnvelope<string[]>(res)) ?? [];
+}

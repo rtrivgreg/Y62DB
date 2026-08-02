@@ -190,6 +190,26 @@ GET /groups/corp/bindings
 200 OK -> data: [ { "rule_id": "access-keys-rotated", "group": "corp", "binding": "default", "payload": {...}, ... } ]
 ```
 
+#### `GET /rules`
+List every distinct rule ID that has at least one binding (full table scan
++ dedupe on `pk`, sorted alphabetically). There's no separate rule-catalog
+data source yet, so this treats "rules with bindings" as the full universe.
+Used by the UI to power client-side fuzzy rule-ID search (fetch once,
+fuzzy-match locally, then fan out `GET /rules/{ruleId}/bindings` per match)
+rather than as a general-purpose catalog browser.
+```
+GET /rules
+200 OK -> data: ["access-keys-rotated", "access-keys-rotated2", ...], meta.count: 2
+```
+
+#### `GET /groups`
+Same idea as `GET /rules`, for the group dimension (dedupe on `sk`'s group
+segment). Powers fuzzy search in "By group" mode.
+```
+GET /groups
+200 OK -> data: ["corp", "eng", ...], meta.count: 2
+```
+
 ### Error codes
 
 | `error.code`          | HTTP status | Meaning                                        |

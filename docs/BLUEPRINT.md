@@ -751,3 +751,83 @@ Key decisions:
 interactively verified in a browser against the live API (create/edit/
 delete specifically — search/list already was, see above) — worth a quick
 pass before moving to Amplify Hosting.
+
+### §12.5 — Typo-tolerant fuzzy search for bindings (2026-08-02)
+
+New feature (not a bug fix): the search box previously required an exact
+rule ID or group. It now tolerates typos and separator differences —
+e.g. querying `access-keys.rotated` matches `access-keys-rotated`, and a
+shortened/typo'd query like `acces` still matches. Requirement clarified
+with the user up front: true edit-distance fuzzy matching (not just
+substring), with candidates sourced by scanning existing bindings (no
+separate rule-catalog endpoint).
+
+**Backend — two new read-only list endpoints** (there's no GSI that
+enumerates distinct rule IDs or groups directly, so both do a paginated
+full-table `Scan`, deduping on `pk`/`sk` respectively):
+
+```
+api/src/
+├── common/dynamodb.py     # + list_distinct_rule_ids(), list_distinct_groups()
+├── rules/list_ids.py       # GET /rules  -> sorted distinct rule IDs
+└── groups/list_ids.py      # GET /groups -> sorted distinct groups
+```
+
+`handler.py` gained two `ROUTES` entries for `GET /rules` and
+`GET /groups`. `crud_api_iam.tf` gained a `dynamodb:Scan` action on the
+Lambda's existing least-privilege policy (documented inline as needed
+specifically because no GSI covers this). `crud_api_gateway.tf` gained
+full resource/method/integration/CORS wiring for both new routes,
+mirroring the existing per-route pattern exactly, plus the deployment's
+`triggers`/`depends_on` updated so a redeploy is forced.
+
+A scan-based approach is fine at the table's current size; the endpoint
+docstrings note it would need a dedicated GSI or a real rule catalog if
+the table grows significantly.
+
+**Frontend — client-side fuzzy matching, then fan-out:**
+
+```
+ui/src/
+├── fuzzyMatch.ts           # normalize + Levenshtein-based typo-tolerant prefix match
+├── api/bindingsApi.ts      # + listAllRuleIds(), listAllGroups()
+└── pages/BindingsBrowser.tsx  # search now fetches candidates, fuzzy-filters, fans out
+```
+
+Matching algorithm (`fuzzyMatch.ts`): normalize case and collapse
+separators (`-`/`_`/`.`/space) on both query and candidate; a candidate
+shorter than the query never matches (the query is the more-specific
+string — a trailing digit like the `2` in `access-keys-rotated2` is a
+meaningful part of a distinct rule ID here, not typo noise); otherwise
+compare the query against the same-length prefix of the candidate via
+Levenshtein distance, matching within ~20% error (minimum 1). This
+reproduces all three examples the user specified: `acces` and
+`access-keys.rotated` both match `access-keys-rotated` and
+`access-keys-rotated2`, while `access-keys.rotated2` matches only the
+longer one.
+
+On search, the UI now fetches the full candidate list (`GET /rules` or
+`GET /groups`), fuzzy-filters it against the query, then fans out
+`listBindingsForRule`/`listBindingsForGroup` per matched candidate and
+merges everything into one results table — shown to the user as a
+"Fuzzy-matched rule ID(s)/group(s): ..." line above the table so it's
+clear why the same rule ID/group can appear more than once (once per
+binding under it).
+
+**Validation performed:**
+- `terraform validate` — passes.
+- `python -m pytest` in `api/` — 15 passed (12 pre-existing + 3 new tests
+  in `api/tests/test_list_ids.py` covering `GET /rules`, `GET /groups`,
+  and the empty-table case).
+- Fuzzy-match algorithm sanity-checked directly in Node against the
+  user's three example queries — all three produce the expected match
+  sets.
+- `npm run build` (`tsc --noEmit` + `vite build`) — succeeds cleanly, no
+  type errors.
+- **Not yet applied to live AWS.** This change touches Terraform (new
+  IAM `Scan` permission + two new API Gateway routes), so it requires a
+  manual `terraform apply` in Terraform Cloud (org `RSHL2136`, workspace
+  `Y62DB`) or via CLI — there is no Terraform Cloud connector available
+  to the agent. Until that apply runs, `GET /rules`/`GET /groups` don't
+  exist live yet and the new frontend search code will fail (404/403)
+  against the real API.
