@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Binding,
   BindingsApiError,
@@ -32,6 +32,13 @@ import { BindingForm } from "../components/BindingForm";
  * §12.8) so a broad match doesn't fire dozens of concurrent Lambda
  * invocations at once against a possibly low account-level concurrency
  * quota.
+ *
+ * Searches are guarded against out-of-order async responses via
+ * `searchGenerationRef` (see docs/BLUEPRINT.md §12.9) — firing a second
+ * search before the first one's request settles no longer risks the
+ * older response overwriting the newer one's results, and a stale
+ * response can no longer clobber results a candidate-picker click just
+ * fetched.
  */
 
 type FormState = { mode: "create" } | { mode: "edit"; existing: Binding } | null;
@@ -51,6 +58,20 @@ export function BindingsBrowser() {
   // service prefix like "ec2" or "s3" matching dozens of real rules) is
   // still browsable rather than a dead end.
   const [tooBroad, setTooBroad] = useState(false);
+
+  // Monotonically increasing "generation" bumped once per runSearch() call.
+  // GET /rules and GET /groups take no query params, so every search fires
+  // an identical request and network timing alone decides which resolves
+  // first — an older search can easily resolve AFTER a newer one. Each
+  // async continuation below checks this ref before committing state, so
+  // only the most recently *started* search's results ever win, no matter
+  // what order their responses actually arrive in. fetchOneCandidate
+  // deliberately snapshots (doesn't bump) this value: multiple picker
+  // clicks from the same search must keep accumulating into `results`
+  // together (that's the whole point of the "click several to build up
+  // the table" picker UX), but a click's result is discarded if a brand
+  // new search has started before it resolves.
+  const searchGenerationRef = useRef(0);
 
   // Guardrail: this table can hold hundreds of real rule IDs/groups (not
   // just test fixtures), so a broad fuzzy match could fan out to hundreds
@@ -92,36 +113,41 @@ export function BindingsBrowser() {
 
   /** Fetch bindings for a single candidate (from the too-broad picker) and merge into results, deduping. */
   async function fetchOneCandidate(candidate: string) {
+    const generation = searchGenerationRef.current;
     setLoading(true);
     setError(null);
     try {
       const data =
         mode === "rule" ? await listBindingsForRule(candidate) : await listBindingsForGroup(candidate);
+      if (searchGenerationRef.current !== generation) return; // a newer search superseded this picker
       setResults((prev) => {
         const existingKeys = new Set((prev ?? []).map(bindingKey));
         const additions = data.filter((b) => !existingKeys.has(bindingKey(b)));
         return [...(prev ?? []), ...additions];
       });
     } catch (err) {
+      if (searchGenerationRef.current !== generation) return;
       if (err instanceof BindingsApiError) {
         setError(`${err.code} (HTTP ${err.status}): ${err.message}`);
       } else {
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
-      setLoading(false);
+      if (searchGenerationRef.current === generation) setLoading(false);
     }
   }
 
   async function runSearch() {
     const q = query.trim();
     if (!q) return;
+    const generation = ++searchGenerationRef.current;
     setLoading(true);
     setError(null);
     setMatchedCandidates(null);
     setTooBroad(false);
     try {
       const candidates = mode === "rule" ? await listAllRuleIds() : await listAllGroups();
+      if (searchGenerationRef.current !== generation) return; // a newer search started meanwhile
       const matches = fuzzyFilter(q, candidates);
       setMatchedCandidates(matches);
 
@@ -147,6 +173,7 @@ export function BindingsBrowser() {
       const outcomes = await fetchInBatches(matches, (c) =>
         mode === "rule" ? listBindingsForRule(c) : listBindingsForGroup(c),
       );
+      if (searchGenerationRef.current !== generation) return; // a newer search started meanwhile
 
       const merged: Binding[] = [];
       const failed: string[] = [];
@@ -166,6 +193,7 @@ export function BindingsBrowser() {
         );
       }
     } catch (err) {
+      if (searchGenerationRef.current !== generation) return; // a newer search started meanwhile
       if (err instanceof BindingsApiError) {
         setError(`${err.code} (HTTP ${err.status}): ${err.message}`);
       } else {
@@ -173,7 +201,7 @@ export function BindingsBrowser() {
       }
       setResults(null);
     } finally {
-      setLoading(false);
+      if (searchGenerationRef.current === generation) setLoading(false);
     }
   }
 

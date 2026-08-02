@@ -951,3 +951,49 @@ build`) — succeeds cleanly, no type errors. No backend/Terraform
 changes; behavior of the too-broad picker (§12.7) and short-query guard
 (§12.6) is unchanged, only the fetch-all path's concurrency pattern
 changed.
+
+### §12.9 — Fix: stale async search responses could overwrite newer results (2026-08-02)
+
+**Bug report:** searching "s3" showed 79 results, all `ec2-*`/`ecr-*`/
+`ecs-*` rule IDs (zero `s3-*` entries), and clicking a candidate button in
+the too-broad picker (§12.7) appeared to do nothing.
+
+**Root cause:** `GET /rules` and `GET /groups` take no query parameters —
+every search fires an identical request, so if a user runs a second
+search before the first one's request has settled, network timing alone
+decides which resolves first. `runSearch()` had no request-cancellation
+or staleness guard: whichever response resolved *last* unconditionally
+overwrote `matchedCandidates`/`results`/`tooBroad` state, regardless of
+which search was fired last. An older, broad search (e.g. a 3-character
+query like `ec2`, which — per the §12.6 threshold formula
+`max(1, ceil(length*0.2))` — legitimately fuzzy-matches `ecr-*` and
+`ecs-*` too, 1 edit away at the same prefix length) resolving after a
+newer `s3` search explains the exact symptom: the `s3` search's own
+(correct) results were silently discarded and replaced by the stale
+search's stragglers. The same unguarded overwrite could also fire after
+a candidate-picker click, clearing results the click had just fetched —
+explaining "the links do nothing." Reproduced in isolation with a
+standalone Node script simulating two same-shaped async calls resolving
+out of order: the unguarded version kept the *slower* call's result even
+though it was fired first; a generation-counter-guarded version always
+kept the most recently *started* call's result regardless of resolve
+order.
+
+**Fix (`ui/src/pages/BindingsBrowser.tsx`):** added a
+`searchGenerationRef` counter. `runSearch()` increments it at the start
+of every call and, after each `await`, bails out before touching state
+if the ref no longer matches the generation it captured — i.e. a newer
+search has since started. `fetchOneCandidate()` (the picker's per-click
+fetch) instead *snapshots* the current generation without incrementing
+it: multiple picker clicks from the same search still accumulate into
+`results` together (the picker's "click several to build up the table"
+UX depends on this), but a click's result is discarded if a brand-new
+search has started before it resolves. Net effect: whichever
+search/click was *started* most recently always wins, independent of
+how the underlying promises actually resolve.
+
+**Validation performed:** standalone Node repro (`repro.mjs`) confirming
+the race and the fix's correctness; `npm run build` (`tsc --noEmit` +
+`vite build`) — succeeds cleanly, no type errors. No backend/Terraform
+changes; the §12.6 fuzzy threshold and §12.7 too-broad picker UX are
+unchanged — only response ordering is now guarded.
