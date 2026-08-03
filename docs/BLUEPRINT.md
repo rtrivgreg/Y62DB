@@ -1275,3 +1275,16 @@ outputs (`https://main.<app-id>.amplifyapp.com` in practice) — verify by
 opening it in a browser and confirming the Cognito sign-in screen
 renders, then re-push to `main` once and confirm Amplify's build history
 shows a new successful build.
+
+**Applied and live (2026-08-03):** `terraform apply` succeeded in TFC
+after `github_access_token` was set as a sensitive workspace variable.
+Live identifiers: `amplify_app_id = d1i2kpf4n8z1da`,
+`amplify_default_domain = d1i2kpf4n8z1da.amplifyapp.com`,
+`amplify_main_branch_url = https://main.d1i2kpf4n8z1da.amplifyapp.com`.
+As expected, app creation alone did not trigger a build (the push that
+created this app predated the webhook's existence) — confirmed via a
+direct request to the URL, which served Amplify's default "Welcome...
+your app will appear here once you complete your first deployment"
+placeholder rather than the real app. This commit is the first push
+made *after* the webhook exists, and is expected to trigger the first
+real build automatically.
