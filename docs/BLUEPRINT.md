@@ -1193,3 +1193,85 @@ token via `InitiateAuth` for the `testuser` test user, then call
 `GET {api_base_url}/rules` and `GET {api_base_url}/rules/<a-real-rule-id>/catalog`
 with it as the `Authorization` header) before considering this feature
 verified end-to-end.
+
+### §12.12 — Feature: AWS Amplify Hosting CI/CD for ui/ (2026-08-03)
+
+**Context:** `ui/` (the bindings CRUD frontend) has only ever been run
+locally via `npm run dev` / `npm run build`. This section adds continuous
+deployment so pushes to `main` automatically build and publish the app,
+closing the last item on the original v1 roadmap.
+
+**Decisions (user's own words / explicit choices):**
+1. Management — "Terraform-managed" (not console-managed). Amplify's
+   `aws_amplify_app`/`aws_amplify_branch` resources are added to this
+   repo's existing root Terraform, consistent with every other resource
+   in the stack.
+2. Domain — "Default amplifyapp.com subdomain." No custom domain/Route 53
+   work in this pass.
+3. Branch scope — "main only." No PR preview branches, no
+   `enable_auto_branch_creation`.
+
+**Terraform changes:**
+- `amplify_variables.tf` (new): `github_repository_url` (default
+  `https://github.com/rtrivgreg/Y62DB`), `github_access_token`
+  (sensitive, no default — must be set directly as a sensitive variable
+  in the Terraform Cloud workspace UI, never in `terraform.tfvars` or
+  committed anywhere), `amplify_app_name` (default
+  `y62db-bindings-ui`).
+- `amplify_hosting.tf` (new): `aws_amplify_app.bindings_ui` (platform
+  `WEB`, `repository`/`access_token` wired to the GitHub repo, one
+  `custom_rule` for SPA-style `404-200` → `/index.html` fallback — a
+  no-op today since `ui/` has no client-side router yet, but avoids a
+  broken-deep-link surprise the moment one is added) and
+  `aws_amplify_branch.main` (`branch_name = "main"`, `stage =
+  "PRODUCTION"`, `framework = "React"`, `enable_auto_build = true`).
+  `build_spec` is intentionally left unset on both resources — Amplify
+  auto-detects the checked-in `amplify.yml` at the repo root instead of
+  needing the build spec embedded as a Terraform string.
+- `amplify_outputs.tf` (new): `amplify_app_id`, `amplify_default_domain`,
+  `amplify_main_branch_url` (constructed as
+  `https://main.<default_domain>`).
+- `amplify.yml` (new, repo root): Amplify's monorepo "applications"
+  build-spec format with `appRoot: ui`, since the frontend lives in a
+  subdirectory, not the repo root. Build phases: `npm ci` → `npm run
+  build`, artifacts from `ui/dist`, `node_modules` cached between builds.
+  No environment variables are needed in the build — `ui/src/amplify-config.ts`
+  hardcodes the Cognito/API identifiers already, it doesn't read
+  `import.meta.env`/`VITE_*` vars.
+
+**Known external dependency (cannot be resolved from inside this repo):**
+the IAM role/policy that Terraform Cloud's AWS OIDC integration assumes
+for this workspace must include `amplify:*` permissions (at minimum
+`CreateApp`, `CreateBranch`, `UpdateApp`, `GetApp`, `GetBranch`,
+`TagResource`, `CreateWebhook`). That role isn't defined anywhere in this
+repo — if `terraform apply` fails with `AccessDenied` on any `amplify:*`
+action, the role's policy needs to be widened out-of-band, wherever it's
+actually managed.
+
+**Validation performed:** verified the exact `aws_amplify_app` /
+`aws_amplify_branch` argument schemas against the current
+`hashicorp/aws` provider docs before writing any HCL (platform values,
+`custom_rule` block shape, `access_token` vs `oauth_token`, valid `stage`
+values) to avoid guessing field names. Terraform: temporarily stripped
+the `cloud{}` block from `terraform.tf` (backed up first, brace-depth
+technique per §12.11), ran `terraform init -backend=false -input=false
+&& terraform validate` → "Success! The configuration is valid.", then
+restored `terraform.tf` from the backup and confirmed via diff that it
+matched the original exactly. `pytest`/`npm run build` were not re-run
+since no Python or frontend application code changed in this pass — only
+new root-level `.tf` files and a new `amplify.yml`.
+
+**Not yet live — and not yet appliable without one manual step first:**
+before `terraform apply` will succeed, a GitHub personal access token
+(classic, `repo` scope, or fine-grained with `Contents: Read-only` +
+`Webhooks: Read & write` on `rtrivgreg/Y62DB`) must be created and set as
+the sensitive `github_access_token` variable directly in the Terraform
+Cloud workspace UI (org `RSHL2136`, workspace `Y62DB`). This was
+deliberately never handled by the agent or passed through chat — Amplify
+only needs the token once, at app-creation time, to install its own
+deploy key and webhook. After that variable is set and `terraform apply`
+succeeds, the live URL will be `amplify_main_branch_url` from the new
+outputs (`https://main.<app-id>.amplifyapp.com` in practice) — verify by
+opening it in a browser and confirming the Cognito sign-in screen
+renders, then re-push to `main` once and confirm Amplify's build history
+shows a new successful build.
