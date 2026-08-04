@@ -1,5 +1,9 @@
 #  Y62DB
 
+azure subscription
+EC2 GUI
+
+
 Y62DB is the catalog and control-plane data layer for curated AWS Config managed rule metadata, parameter values, scope values, and internal compliance flavors.[cite:129][cite:9][web:206] It exists to separate baseline AWS-managed rule inventory from organization-specific configuration choices so future tooling can generate consistent conformance packs, rule bundles, and policy outputs from a durable source of truth.[cite:129][web:79][web:503]
 
 ## Why this project exists
