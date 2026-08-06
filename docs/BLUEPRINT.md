@@ -1288,3 +1288,108 @@ your app will appear here once you complete your first deployment"
 placeholder rather than the real app. This commit is the first push
 made *after* the webhook exists, and is expected to trigger the first
 real build automatically.
+
+**Confirmed live (2026-08-03):** after that push, `https://main.d1i2kpf4n8z1da.amplifyapp.com`
+now serves the real built app (verified title + JS/CSS bundle assets all
+returning HTTP 200), not the placeholder. Amplify Hosting CI/CD for
+`ui/` is complete — every future push to `main` auto-builds and
+auto-deploys.
+
+### §12.13 — Feature: Textual TUI client for the bindings CRUD API (2026-08-06)
+
+**Context:** user asked for a second, terminal-based way to run this
+application — a TUI that performs CRUD against the same live API `ui/`
+talks to, built with the Textual Python library, using Textual's default
+widgets/behavior (mouse support included) rather than custom low-level
+terminal handling.
+
+**Scope decision (explicit, via `ask_user_question`):** "Core CRUD only"
+— search (rule ID substring match / group fuzzy match), create, edit,
+delete, matching `ui/src/pages/BindingsBrowser.tsx` and
+`ui/src/components/BindingForm.tsx` behavior and error wording as
+closely as possible. Deliberately **excluded** from v1 (the user's other
+option): the read-only rule-catalog drill-in ("View details" on unbound
+rules) and the too-many-matches picker / batched fan-out — this TUI fans
+out to every search match directly, which is fine at this project's
+current data scale.
+
+**New component — `tui/` (new top-level folder, sibling to `ui/` and
+`api/`):**
+- `config.py` — live AWS identifiers (Cognito App Client ID, API base
+  URL), kept in lockstep with `ui/src/amplify-config.ts`. No new AWS
+  resources — this is a second client against the *existing* backend.
+- `auth.py` — Cognito `InitiateAuth` (`USER_PASSWORD_AUTH` flow) via
+  `boto3`. No AWS IAM credentials needed to run the TUI: Cognito's
+  end-user auth operations are unsigned/unauthenticated at the SDK
+  level, confirmed empirically (see Validation below) — same reason the
+  web UI's Authenticator component needs no IAM creds either.
+- `fuzzy_match.py` — direct Python port of `ui/src/fuzzyMatch.ts`
+  (Levenshtein-based typo-tolerant prefix match for groups, plain
+  substring match for rule IDs), so both search modes match the same
+  things the web UI's search box does.
+- `api_client.py` — direct async port of `ui/src/api/bindingsApi.ts`
+  (`BindingsApiClient`, `Binding`, `BindingsApiError`) — same endpoints,
+  same envelope-unwrapping, same error codes/status surfaced to the
+  caller.
+- `app.py` — the Textual `App` plus four screens: `LoginScreen`
+  (Cognito sign-in), `BrowseScreen` (search mode select + query input +
+  `DataTable` results + Edit/Delete-selected buttons + New
+  binding/Sign out), `BindingFormScreen` (shared create/edit modal — same
+  validation as the web form: extra-payload JSON must parse to an
+  object, rule ID + group required, version auto-incremented on edit and
+  sent as `expected_version` for optimistic locking), and
+  `ConfirmDeleteScreen` (stock Textual `ModalScreen` yes/no dialog — the
+  same pattern shown in Textual's own docs/examples for confirmation
+  dialogs).
+- `requirements.txt` (`textual`, `httpx`, `boto3`), `README.md` (setup/run
+  instructions, mouse-support notes incl. the `tmux` `set -g mouse on`
+  caveat), `tests/` (see Validation).
+
+**Mouse support:** no custom code needed — Textual enables mouse
+reporting by default in any terminal that supports xterm mouse tracking
+(iTerm2, Terminal.app, Windows Terminal, most Linux terminals). Clicking
+`DataTable` rows, buttons, and `Select` dropdowns all work out of the
+box; only `tmux` needs `set -g mouse on` added by the user first.
+
+**Notable side benefit over the web UI:** the web UI's Delete
+confirmation uses the browser's native `window.confirm()` — which, per
+the manual-QA session on 2026-08-03/2026-08-06, turned out to reliably
+hang this project's own browser-automation tooling (native
+browser-chrome-level dialogs sit outside the page DOM). `ConfirmDeleteScreen`
+here is a normal in-app Textual screen instead, not a terminal-chrome
+popup — no equivalent automation hazard.
+
+**Validation performed:**
+- `pip install -r tui/requirements.txt` (+ `pytest`, `pytest-asyncio`)
+  into a fresh `tui/.venv` — clean install, `textual==0.89.1`,
+  `httpx==0.28.1`, `boto3==1.43.66`.
+- `python -m py_compile` on all five modules — clean.
+- `tui/tests/test_fuzzy_match.py` (13 cases) — ports the exact examples
+  documented in `ui/src/fuzzyMatch.ts`'s own docstring (exact match,
+  separator normalization, shorter-candidate rejection, prefix
+  extension, typo tolerance, the short-query guardrail, substring mode's
+  lack of typo tolerance) — all pass.
+- `tui/tests/test_app_boots.py` — headless smoke test via Textual's own
+  `App.run_test()`/`Pilot` utilities: app mounts to `LoginScreen`
+  without crashing; submitting the sign-in form with both fields empty
+  shows the client-side "required" error with no network call attempted
+  — both pass.
+- `tui/pytest.ini` sets `asyncio_mode = auto` so plain `pytest` (run from
+  `tui/`) picks up both async tests with no extra flags — confirmed:
+  "14 passed".
+- **Live end-to-end check against the real API** (`tui/tests/live_check.py`,
+  a manual script, not part of the automated suite since it needs real
+  Cognito credentials): signed in as `testuser` via `auth.sign_in`
+  (boto3 `InitiateAuth`, no AWS IAM credentials configured in this
+  sandbox — confirming Cognito's user-auth operations really are
+  unsigned), then exercised the exact `BindingsApiClient` methods the
+  TUI screens call — create → list → optimistic-lock update (v1→v2) →
+  confirmed a stale-version update correctly raises `BindingsApiError`
+  with `code="conflict"` (HTTP 409) → delete → confirmed gone. Output:
+  "ALL LIVE CHECKS PASSED". Self-cleaning — the test binding
+  (`ui-test-rule`/`ui-test-group`/`tui-livecheck`) no longer exists in
+  the live table afterward.
+- Full interactive mouse-driven use of the running TUI (as opposed to
+  the headless boot/API checks above) was not exercised live in this
+  session — the terminal-rendering/mouse-click path itself should be
+  spot-checked by the user on their own machine.
