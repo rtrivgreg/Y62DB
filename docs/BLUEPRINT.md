@@ -1393,3 +1393,46 @@ popup — no equivalent automation hazard.
   the headless boot/API checks above) was not exercised live in this
   session — the terminal-rendering/mouse-click path itself should be
   spot-checked by the user on their own machine.
+
+**Follow-up amendment (same day, 2026-08-06): catalog search added back
+in a minimal form.** After first use, the user searched for "s3" and
+"sage" in "By rule ID" mode and got confused by empty/sparse results.
+Root cause (not a bug): the Bindings browser — in both the TUI and the
+original `BindingsBrowser.tsx` — only ever fans out to rules/groups that
+**already have a binding**. Live data at the time: out of 810 catalog
+rules, only 2 have any binding at all (`cloudfront-s3-origin-access-control-enabled`
+plus the `ui-test-rule` fixtures); all 24 `sagemaker-*` rules and the
+other 38 `s3`-containing catalog rules have none. Only 7 groups exist
+total (`a2_g`, `a3`, `a4`, `c2`, `corp`, `smoke-test`, `ui-test-group`).
+Confirmed live that the search logic itself was already correct —
+searching "s3" does return the one bound match.
+
+Given this, the user asked to add catalog search back (reversing part
+of the original §12.13 "core CRUD only" scope decision) so unbound
+catalog rules can be found and bound directly from the TUI, without the
+full "View details" catalog drill-in that was still intentionally left
+out (severity/description/scope metadata display is a separate,
+un-requested feature).
+
+**Implementation:** `BrowseScreen` in rule-ID mode now splits
+substring matches into two groups — bound rule IDs (fanned out to their
+bindings as before, shown in the existing results table) and unbound
+rule IDs (shown in a new, separate `catalog_table` labeled "Catalog
+rules matching your search with no binding yet"). A new "Create binding
+for selected" button opens the same `BindingFormScreen` create modal,
+pre-filled with the selected catalog rule ID. Group-mode search is
+unchanged — groups aren't a catalog concept (they're just labels that
+exist on bindings), so there's nothing unbound to show there.
+
+**Validation:**
+- `tui/tests/test_catalog_search.py` (3 new headless tests, fake API
+  client, no live calls): confirms a mixed "s3" search splits correctly
+  into 1 bound result + 2 unbound catalog matches; confirms a "sage"-style
+  search with zero bound matches still surfaces the 1 unbound catalog
+  match; confirms selecting a catalog row enables the "Create binding for
+  selected" button. Full suite now "17 passed".
+- Live check: searched real data for "sage" (24 unbound catalog
+  matches confirmed), created a binding for `sagemaker-app-image-config-tagged`
+  via the same code path the button triggers, confirmed `has_binding`
+  flipped to `true` afterward, then deleted it — self-cleaning, no
+  leftover data.

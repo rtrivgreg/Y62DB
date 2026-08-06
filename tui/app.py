@@ -343,6 +343,14 @@ class BrowseScreen(Screen):
         height: auto;
         margin-top: 1;
     }
+    #catalog-label {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    #catalog-actions {
+        height: auto;
+        margin-top: 1;
+    }
     """
 
     BINDINGS = [
@@ -355,6 +363,8 @@ class BrowseScreen(Screen):
         self.api = BindingsApiClient(id_token)
         self._bindings_by_key: dict[str, Binding] = {}
         self.selected_binding: Optional[Binding] = None
+        self._unbound_rule_ids: dict[str, str] = {}
+        self.selected_catalog_rule_id: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -371,15 +381,25 @@ class BrowseScreen(Screen):
             yield Button("Sign out", id="signout-btn")
         yield Static("", id="notice")
         yield Static("", id="error")
+        yield Static("Existing bindings matching your search:")
         yield DataTable(id="results_table", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="row-actions"):
             yield Button("Edit selected", id="edit-btn", disabled=True)
             yield Button("Delete selected", id="delete-btn", disabled=True)
+        yield Static(
+            "Catalog rules matching your search with no binding yet (rule-ID search only):",
+            id="catalog-label",
+        )
+        yield DataTable(id="catalog_table", cursor_type="row", zebra_stripes=True)
+        with Horizontal(id="catalog-actions"):
+            yield Button("Create binding for selected", id="create-from-catalog-btn", disabled=True)
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#results_table", DataTable)
         table.add_columns("Rule", "Group", "Binding", "Payload")
+        catalog_table = self.query_one("#catalog_table", DataTable)
+        catalog_table.add_column("Rule ID (no binding yet)", key="rule_id")
         self.query_one("#query_input", Input).focus()
 
     def action_focus_search(self) -> None:
@@ -409,15 +429,24 @@ class BrowseScreen(Screen):
             self._open_edit_form()
         elif event.button.id == "delete-btn":
             self._confirm_delete()
+        elif event.button.id == "create-from-catalog-btn":
+            self._open_create_form_for_catalog_rule()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        key = str(event.row_key.value)
-        self.selected_binding = self._bindings_by_key.get(key)
-        has_selection = self.selected_binding is not None
-        self.query_one("#edit-btn", Button).disabled = not has_selection
-        self.query_one("#delete-btn", Button).disabled = not has_selection
+        if event.data_table.id == "results_table":
+            key = str(event.row_key.value)
+            self.selected_binding = self._bindings_by_key.get(key)
+            has_selection = self.selected_binding is not None
+            self.query_one("#edit-btn", Button).disabled = not has_selection
+            self.query_one("#delete-btn", Button).disabled = not has_selection
+        elif event.data_table.id == "catalog_table":
+            key = str(event.row_key.value)
+            self.selected_catalog_rule_id = self._unbound_rule_ids.get(key)
+            self.query_one("#create-from-catalog-btn", Button).disabled = (
+                self.selected_catalog_rule_id is None
+            )
 
-    def _show_results(self, results: list[Binding]) -> None:
+    def _show_results(self, results: list[Binding], unbound_rule_ids: Optional[list[str]] = None) -> None:
         table = self.query_one("#results_table", DataTable)
         table.clear()
         self._bindings_by_key.clear()
@@ -427,7 +456,21 @@ class BrowseScreen(Screen):
         for b in results:
             self._bindings_by_key[b.key] = b
             table.add_row(b.rule_id, b.group, b.binding, json.dumps(b.payload), key=b.key)
-        self.set_notice(f"{len(results)} binding(s) found.")
+
+        catalog_table = self.query_one("#catalog_table", DataTable)
+        catalog_table.clear()
+        self._unbound_rule_ids.clear()
+        self.selected_catalog_rule_id = None
+        self.query_one("#create-from-catalog-btn", Button).disabled = True
+        unbound_rule_ids = unbound_rule_ids or []
+        for rid in unbound_rule_ids:
+            self._unbound_rule_ids[rid] = rid
+            catalog_table.add_row(rid, key=rid)
+
+        notice = f"{len(results)} binding(s) found."
+        if unbound_rule_ids:
+            notice += f" {len(unbound_rule_ids)} catalog rule(s) matched with no binding yet."
+        self.set_notice(notice)
 
     def _run_search(self) -> None:
         query = self.query_one("#query_input", Input).value.strip()
@@ -447,16 +490,21 @@ class BrowseScreen(Screen):
                 matched = substring_filter(query, all_ids)
                 has_binding = {r["rule_id"]: r.get("has_binding", False) for r in rules}
                 bound = [rid for rid in matched if has_binding.get(rid)]
+                unbound = [rid for rid in matched if not has_binding.get(rid)]
                 results: list[Binding] = []
                 for rid in bound:
                     results.extend(await self.api.list_bindings_for_rule(rid))
+                self._show_results(results, unbound_rule_ids=unbound)
             else:
                 groups = await self.api.list_all_groups()
                 matched = fuzzy_filter(query, groups)
                 results = []
                 for g in matched:
                     results.extend(await self.api.list_bindings_for_group(g))
-            self._show_results(results)
+                # The catalog concept only applies to rules — groups are just
+                # labels that exist on bindings, there's no separate group
+                # catalog to drill into, so no unbound list here.
+                self._show_results(results, unbound_rule_ids=[])
         except BindingsApiError as e:
             self.set_notice(None)
             self.set_error(f"{e.code} (HTTP {e.status}): {e}")
@@ -470,6 +518,13 @@ class BrowseScreen(Screen):
         query = self.query_one("#query_input", Input).value.strip()
         default_rule_id = query if mode == "rule" else ""
         form = BindingFormScreen(self.api, mode="create", default_rule_id=default_rule_id)
+        self.app.push_screen(form, self._on_form_dismissed)
+
+    def _open_create_form_for_catalog_rule(self) -> None:
+        if not self.selected_catalog_rule_id:
+            return
+        self.set_notice(None)
+        form = BindingFormScreen(self.api, mode="create", default_rule_id=self.selected_catalog_rule_id)
         self.app.push_screen(form, self._on_form_dismissed)
 
     def _open_edit_form(self) -> None:

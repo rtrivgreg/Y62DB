@@ -8,8 +8,16 @@ Scope is core CRUD only (search/create/edit/delete), matching
 `ui/src/pages/BindingsBrowser.tsx` and `ui/src/components/BindingForm.tsx`
 behavior and error wording as closely as possible. Deliberately **not**
 included (explicit decision, see `docs/BLUEPRINT.md` §12.13): the
-read-only rule-catalog drill-in, and the too-many-matches picker/batched
-fan-out (this TUI fans out to every match directly).
+read-only rule-catalog *details* drill-in (severity/description/scope
+metadata), and the too-many-matches picker/batched fan-out (this TUI
+fans out to every match directly).
+
+When searching by rule ID, results are split into two tables: bindings
+that already exist (top table, with Edit/Delete actions) and catalog
+rules that matched your search but have no binding yet (bottom table,
+with a "Create binding for selected" action). Search-by-group only
+shows the top table, since groups are just labels on existing bindings
+— there's no separate group catalog to browse.
 
 ## Setup
 
