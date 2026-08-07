@@ -351,12 +351,24 @@ class BrowseScreen(Screen):
         height: auto;
         margin-top: 1;
     }
+    #all-rules-label {
+        margin-top: 1;
+    }
+    #all_rules_table {
+        height: 12;
+        border: round $primary;
+        margin-bottom: 1;
+    }
     """
 
     BINDINGS = [
         ("s", "focus_search", "Search"),
         ("n", "new_binding", "New binding"),
     ]
+
+    # Placeholder glyph for the not-yet-wired bulk-select checkbox column —
+    # inert for now, reserved for a future bulk-action feature.
+    _CHECKBOX_PLACEHOLDER = "\u2610"  # ☐
 
     def __init__(self, id_token: str) -> None:
         super().__init__()
@@ -365,9 +377,19 @@ class BrowseScreen(Screen):
         self.selected_binding: Optional[Binding] = None
         self._unbound_rule_ids: dict[str, str] = {}
         self.selected_catalog_rule_id: Optional[str] = None
+        # Rule currently selected from the full-catalog list (as opposed to
+        # via the search box) — tracked so "refresh after save/delete" knows
+        # which view to reload.
+        self._current_rule_id: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static(
+            "All config rules — select a row to manage its bindings "
+            "(checkbox column reserved for a future bulk action):",
+            id="all-rules-label",
+        )
+        yield DataTable(id="all_rules_table", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="toolbar"):
             yield Select(
                 [("By rule ID", "rule"), ("By group", "group")],
@@ -400,7 +422,31 @@ class BrowseScreen(Screen):
         table.add_columns("Rule", "Group", "Binding", "Payload")
         catalog_table = self.query_one("#catalog_table", DataTable)
         catalog_table.add_column("Rule ID (no binding yet)", key="rule_id")
+        all_rules_table = self.query_one("#all_rules_table", DataTable)
+        all_rules_table.add_columns("", "Rule ID", "Bound")
         self.query_one("#query_input", Input).focus()
+        self._load_all_rules()
+
+    @work(exclusive=True)
+    async def _load_all_rules(self) -> None:
+        """Populates the initial-view scrollable list of every catalog rule."""
+        self.set_notice("Loading rule catalog...")
+        self.set_error(None)
+        try:
+            rules = await self.api.list_all_rule_ids()
+            table = self.query_one("#all_rules_table", DataTable)
+            table.clear()
+            for r in rules:
+                rule_id = r["rule_id"]
+                bound = "Yes" if r.get("has_binding") else "No"
+                table.add_row(self._CHECKBOX_PLACEHOLDER, rule_id, bound, key=rule_id)
+            self.set_notice(f"{len(rules)} config rule(s) loaded. Select a row to manage its bindings.")
+        except BindingsApiError as e:
+            self.set_notice(None)
+            self.set_error(f"{e.code} (HTTP {e.status}): {e}")
+        except Exception as e:  # noqa: BLE001
+            self.set_notice(None)
+            self.set_error(str(e))
 
     def action_focus_search(self) -> None:
         self.query_one("#query_input", Input).focus()
@@ -445,6 +491,9 @@ class BrowseScreen(Screen):
             self.query_one("#create-from-catalog-btn", Button).disabled = (
                 self.selected_catalog_rule_id is None
             )
+        elif event.data_table.id == "all_rules_table":
+            rule_id = str(event.row_key.value)
+            self._load_bindings_for_rule_id(rule_id)
 
     def _show_results(self, results: list[Binding], unbound_rule_ids: Optional[list[str]] = None) -> None:
         table = self.query_one("#results_table", DataTable)
@@ -476,10 +525,41 @@ class BrowseScreen(Screen):
         query = self.query_one("#query_input", Input).value.strip()
         if not query:
             return
+        self._current_rule_id = None
         mode = str(self.query_one("#mode_select", Select).value)
         self.set_notice("Loading...")
         self.set_error(None)
         self._do_search(mode, query)
+
+    @work(exclusive=True)
+    async def _load_bindings_for_rule_id(self, rule_id: str) -> None:
+        """Selecting a row in the full-catalog list acts like searching for
+        that exact rule: its existing bindings (if any) populate the results
+        table for edit/delete, or it shows up as an unbound catalog match so
+        "Create binding for selected" can be used."""
+        self._current_rule_id = rule_id
+        self.set_notice(f"Loading bindings for {rule_id}...")
+        self.set_error(None)
+        try:
+            results = await self.api.list_bindings_for_rule(rule_id)
+            if results:
+                self._show_results(results, unbound_rule_ids=[])
+            else:
+                self._show_results([], unbound_rule_ids=[rule_id])
+        except BindingsApiError as e:
+            self.set_notice(None)
+            self.set_error(f"{e.code} (HTTP {e.status}): {e}")
+        except Exception as e:  # noqa: BLE001
+            self.set_notice(None)
+            self.set_error(str(e))
+
+    def _refresh_current_view(self) -> None:
+        """Re-runs whichever data-flow is currently active — a rule selected
+        from the full-catalog list, or a search — after a save/delete."""
+        if self._current_rule_id:
+            self._load_bindings_for_rule_id(self._current_rule_id)
+        else:
+            self._run_search()
 
     @work(exclusive=True)
     async def _do_search(self, mode: str, query: str) -> None:
@@ -516,7 +596,7 @@ class BrowseScreen(Screen):
         self.set_notice(None)
         mode = str(self.query_one("#mode_select", Select).value)
         query = self.query_one("#query_input", Input).value.strip()
-        default_rule_id = query if mode == "rule" else ""
+        default_rule_id = self._current_rule_id or (query if mode == "rule" else "")
         form = BindingFormScreen(self.api, mode="create", default_rule_id=default_rule_id)
         self.app.push_screen(form, self._on_form_dismissed)
 
@@ -537,7 +617,8 @@ class BrowseScreen(Screen):
     def _on_form_dismissed(self, saved: Optional[bool]) -> None:
         if saved:
             self.set_notice("Binding saved. Refreshing results...")
-            self._run_search()
+            self._refresh_current_view()
+            self._load_all_rules()
 
     def _confirm_delete(self) -> None:
         b = self.selected_binding
@@ -558,7 +639,8 @@ class BrowseScreen(Screen):
         try:
             await self.api.delete_binding(b.rule_id, b.group, b.binding)
             self.set_notice(f"Deleted {b.rule_id} / {b.group} / {b.binding}. Refreshing results...")
-            self._run_search()
+            self._refresh_current_view()
+            self._load_all_rules()
         except BindingsApiError as e:
             self.set_error(f"{e.code} (HTTP {e.status}): {e}")
         except Exception as e:  # noqa: BLE001

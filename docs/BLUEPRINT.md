@@ -1436,3 +1436,50 @@ exist on bindings), so there's nothing unbound to show there.
   via the same code path the button triggers, confirmed `has_binding`
   flipped to `true` afterward, then deleted it — self-cleaning, no
   leftover data.
+
+**Second follow-up amendment (same day, 2026-08-06): full-catalog list
+as the initial view.** User request: "Initial view should be a
+scrollable list of all config rules with a checkbox on the left column
+per rule row that will be hooked up at a later date. All other CRUD
+operations will simply be invoked from this screen as they currently
+are." Clarified via `ask_user_question` that selecting a row in this new
+list should drive the existing CRUD flow (not be purely decorative).
+
+**Implementation:** `BrowseScreen` now loads the full 810-rule catalog
+automatically on mount (no search needed first) into a new
+`all_rules_table`, positioned above the toolbar as the landing content.
+Each row shows a placeholder checkbox glyph (`\u2610`, inert — reserved
+for a future bulk-action feature, not wired to anything yet), the rule
+ID, and a Yes/No bound indicator (from the existing `has_binding` flag,
+no extra API calls needed). Selecting a row calls `list_bindings_for_rule`
+for that exact rule and routes into the same `_show_results()` path the
+search flow already uses — a bound rule's binding(s) appear in the
+results table for edit/delete; an unbound rule appears as a single
+catalog-table row so "Create binding for selected" pre-fills it. The
+search box and mode select are unchanged and still work independently
+as an alternate way in.
+
+**Bug fixed along the way:** refresh-after-save and refresh-after-delete
+previously always called `_run_search()`, which silently no-ops when the
+query box is empty — exactly the state you're in right after picking a
+row from the full list instead of typing a search. Added
+`self._current_rule_id` tracking plus a `_refresh_current_view()` helper
+that re-runs the rule-selection load instead of a stale empty search
+when that's how the current view got populated. Also both save/delete
+paths now refresh the full-catalog list's Bound column afterward, and
+"+ New binding" now prefers the currently-selected catalog rule as its
+default Rule ID.
+
+**Validation:**
+- `tui/tests/test_full_catalog_list.py` (4 new headless tests, fake API,
+  no live calls): full list populates on mount with the checkbox
+  placeholder in every row; selecting a bound rule loads its binding(s);
+  selecting an unbound rule offers create; a regression test confirms
+  delete-then-refresh reloads the rule-selected view rather than
+  no-oping against an empty search box. Full suite now "21 passed".
+- Live check (`tui/tests/live_check_full_catalog.py`): loaded all 810
+  real catalog rules, selected an unbound one, created a binding for it
+  via the create-from-catalog path, confirmed `has_binding` flipped to
+  `true` in the full list, reloaded it as a bound-rule selection would,
+  then deleted it and confirmed `has_binding` flipped back to `false`.
+  Output: "ALL LIVE CHECKS PASSED", self-cleaning.

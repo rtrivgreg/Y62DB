@@ -12,12 +12,22 @@ read-only rule-catalog *details* drill-in (severity/description/scope
 metadata), and the too-many-matches picker/batched fan-out (this TUI
 fans out to every match directly).
 
-When searching by rule ID, results are split into two tables: bindings
-that already exist (top table, with Edit/Delete actions) and catalog
-rules that matched your search but have no binding yet (bottom table,
-with a "Create binding for selected" action). Search-by-group only
-shows the top table, since groups are just labels on existing bindings
-— there's no separate group catalog to browse.
+The initial view (no search needed) is a scrollable list of every
+catalog rule (`all_rules_table`, near the top of the screen), each row
+showing a placeholder checkbox (reserved for a future bulk action — not
+wired to anything yet), the rule ID, and whether it's bound. **Clicking
+a row drives the same CRUD flow a search hit would**: a bound rule's
+existing binding(s) load into the results table for edit/delete; an
+unbound rule surfaces in the catalog table so "Create binding for
+selected" can pre-fill it.
+
+The search box below it is an alternate way in, not a replacement: when
+searching by rule ID, results are split into two tables: bindings that
+already exist (top table, with Edit/Delete actions) and catalog rules
+that matched your search but have no binding yet (bottom table, with a
+"Create binding for selected" action). Search-by-group only shows the
+top table, since groups are just labels on existing bindings — there's
+no separate group catalog to browse.
 
 ## Setup
 
@@ -62,4 +72,4 @@ button/input, arrow keys move the table cursor.
 - `api_client.py` — async REST client, a direct port of `ui/src/api/bindingsApi.ts`.
 - `fuzzy_match.py` — search matchers, a direct port of `ui/src/fuzzyMatch.ts`.
 - `app.py` — the Textual `App` and all screens (Login, Browse, BindingForm, ConfirmDelete).
-- `tests/` — unit tests for the matcher port + a headless app-boot smoke test.
+- `tests/` — unit tests for the matcher port, headless app-boot smoke test, catalog-search tests, and full-catalog-list tests (`test_full_catalog_list.py`). `tests/live_check_full_catalog.py` is a manual (non-pytest) live-API check, not run in CI.
