@@ -14,12 +14,43 @@ fans out to every match directly).
 
 The initial view (no search needed) is a scrollable list of every
 catalog rule (`all_rules_table`, near the top of the screen), each row
-showing a placeholder checkbox (reserved for a future bulk action — not
-wired to anything yet), the rule ID, and whether it's bound. **Clicking
-a row drives the same CRUD flow a search hit would**: a bound rule's
-existing binding(s) load into the results table for edit/delete; an
-unbound rule surfaces in the catalog table so "Create binding for
-selected" can pre-fill it.
+showing a checkbox, the rule ID, and whether it's bound. **Clicking
+anywhere in a row except the checkbox column drives the same CRUD flow a
+search hit would**: a bound rule's existing binding(s) load into the
+results table for edit/delete; an unbound rule surfaces in the catalog
+table so "Create binding for selected" can pre-fill it.
+
+### Saving and loading rule sets (checkboxes)
+
+Clicking the checkbox column (leftmost, ☐/☑) toggles that rule in or out
+of the current selection — this is independent of the CRUD flow above
+and doesn't load any bindings.
+
+- **Load a saved set**: the "Load a saved rule set from /JSON…" dropdown
+  above the table lists every `*.json` file present in the `/JSON` folder
+  at the repo root (sibling to `tui/`, `ui/`, `docs/`, etc. — e.g.
+  `JSON/compute.json`, `JSON/storage.json`). Each file is a plain JSON
+  array of rule-name strings, e.g.:
+
+  ```json
+  ["compute-rule-a", "compute-rule-b"]
+  ```
+
+  Picking `compute` from the dropdown loads `/JSON/compute.json` and
+  checks every row whose rule ID appears in that array. If the file
+  contains a rule name no longer in the live catalog, it's skipped and
+  named in a warning notice — the rest still load normally.
+- **Save the current selection**: click "Save selection". If you loaded
+  a file this session, it's silently overwritten with exactly the
+  currently-checked rows (no confirmation prompt). If nothing has been
+  loaded yet, you're prompted for a new filename and `/JSON/<name>.json`
+  is created; it then becomes the active file for the rest of the
+  session and appears in the dropdown. Saving with **no rows checked is
+  blocked** with an inline error — nothing is written or overwritten.
+
+See `docs/BLUEPRINT.md` §12.14 and
+`docs/feature_requests/2026-08-07_tui_checkbox_save_load.md` for the full
+spec and design rationale.
 
 The search box below it is an alternate way in, not a replacement: when
 searching by rule ID, results are split into two tables: bindings that
@@ -72,4 +103,4 @@ button/input, arrow keys move the table cursor.
 - `api_client.py` — async REST client, a direct port of `ui/src/api/bindingsApi.ts`.
 - `fuzzy_match.py` — search matchers, a direct port of `ui/src/fuzzyMatch.ts`.
 - `app.py` — the Textual `App` and all screens (Login, Browse, BindingForm, ConfirmDelete).
-- `tests/` — unit tests for the matcher port, headless app-boot smoke test, catalog-search tests, and full-catalog-list tests (`test_full_catalog_list.py`). `tests/live_check_full_catalog.py` is a manual (non-pytest) live-API check, not run in CI.
+- `tests/` — unit tests for the matcher port, headless app-boot smoke test, catalog-search tests, full-catalog-list tests (`test_full_catalog_list.py`), and the checkbox save/load tests (`test_checkbox_save_load.py`, uses a temp directory in place of `/JSON` — never your real local files). `tests/live_check_full_catalog.py` is a manual (non-pytest) live-API check, not run in CI.

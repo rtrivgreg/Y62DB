@@ -1483,3 +1483,118 @@ default Rule ID.
   `true` in the full list, reloaded it as a bound-rule selection would,
   then deleted it and confirmed `has_binding` flipped back to `false`.
   Output: "ALL LIVE CHECKS PASSED", self-cleaning.
+
+### §12.14 — Feature: multi-select checkboxes + save/load rule sets to/from /JSON (2026-08-07)
+
+**Context:** the `all_rules_table` checkbox column added in the §12.13
+amendment above was an inert placeholder (`☐`, "reserved for a future
+bulk action"). This feature wires it up: the checkboxes are now
+interactive, and a checked set of rules can be saved to, and reloaded
+from, a named JSON file. Formalized via the repo's own
+`docs/FEATURE_REQUEST_TEMPLATE.md` (see
+`docs/feature_requests/2026-08-07_tui_checkbox_save_load.md` for the
+full filled-out request, refined over several rounds of
+`ask_user_question` scope clarification before implementation).
+
+**Scope decisions (explicit, via the feature request + follow-up
+clarification):**
+- Checkboxes live only on `all_rules_table` (the full-catalog landing
+  view) — not on the search-results or catalog-search tables.
+- Rule sets are plain JSON arrays of rule-name strings (not an object
+  wrapper), stored in a **repo-root `/JSON` folder** (sibling to `tui/`,
+  `ui/`, `api/`, `docs/`). At the point this feature's implementation
+  began, a fresh clone of `rtrivgreg/Y62DB` had no `JSON/` folder, so per
+  explicit instruction this feature was built as a generic mechanism
+  (dynamic directory scan, read, write) without inventing placeholder
+  file contents — it works correctly whether or not `/JSON` exists yet on
+  a given machine. Mid-session, the repo owner pushed `JSON/compute.json`
+  (96 rule names) and `JSON/storage.json` (59 rule names) directly to
+  `main` (commits `2c34ebf` and `7075688`), which this feature's branch
+  was rebased onto before merging — confirming `/JSON` is meant to be
+  **committed** to the repo, not local-only/gitignored as first assumed.
+  The generic mechanism required no changes to work with these real files
+  (verified live against both, see Validation below); only the
+  documentation and an earlier `.gitignore` addition were corrected to
+  stop claiming `/JSON` is uncommitted.
+- **Load** is dropdown-driven: a `Select` widget (`#json_select`) lists
+  every `*.json` file currently in `/JSON` by base name; choosing one
+  immediately loads it (via `Select.Changed`, no separate "Load" button).
+  Every rule name in the file still present in the live catalog
+  (804 rules as of the latest verification, but this always checks
+  against whatever `_catalog_rule_ids` holds at load time, not a
+  hardcoded count) gets checked; any name no longer in the catalog is skipped and named in
+  a warning notice (load still succeeds for the valid names — not
+  treated as an error).
+- **Save** is button-driven (`#save-json-btn`) and round-trips against
+  whichever file was most recently loaded this session ("the active
+  file"): if one is active, Save overwrites it with exactly the
+  currently-checked set (not a merge with prior contents). If no file is
+  active (fresh selection, nothing loaded yet), Save opens a new
+  `SaveAsScreen` modal (same `ModalScreen` pattern as
+  `ConfirmDeleteScreen`) for a new filename, writes `/JSON/<name>.json`,
+  and that file becomes the active file and a new dropdown option.
+- **Saving with zero rules checked is blocked** with a client-side error
+  ("Select at least one rule before saving.") — no file is written or
+  overwritten, active or not (explicit repo-owner decision, resolving the
+  §6 open question left in the original feature-request draft).
+
+**Implementation (`tui/app.py`):**
+- `JSON_DIR` module-level constant: `Path(__file__).resolve().parent.parent
+  / "JSON"` — resolved relative to the repo root regardless of which of
+  the two documented ways the TUI is launched (`python -m tui.app` from
+  the repo root, or `cd tui && python app.py`), so Save/Load never depend
+  on the process's working directory.
+- `all_rules_table`'s `cursor_type` changed from `"row"` to `"cell"` so
+  the checkbox column (column 0) can be distinguished from the rest of
+  the row via `DataTable.CellSelected.coordinate.column` — clicking
+  column 0 toggles the checkbox (`_toggle_checkbox`), clicking anywhere
+  else in the row still drives the pre-existing "load bindings for this
+  rule" flow that `on_data_table_row_selected` used to handle directly
+  (moved into a new `on_data_table_cell_selected` handler; the old
+  `RowSelected` branch for `all_rules_table` was removed since that event
+  never fires once `cursor_type` is `"cell"`).
+- New `BrowseScreen` state: `_selected_rule_ids: set[str]` (in-memory
+  checked set), `_catalog_rule_ids: set[str]` (populated in
+  `_load_all_rules`, used to validate Load's file contents against the
+  live catalog), `_active_json_file: Optional[str]`.
+- New `SaveAsScreen(ModalScreen[Optional[str]])` — a filename-prompt
+  modal, structurally identical to `ConfirmDeleteScreen`, returning the
+  trimmed name via `dismiss()` or `None` on cancel.
+- `_list_json_files()`, `_refresh_json_dropdown()`, `_load_json_selection()`,
+  `_on_save_pressed()`, `_on_saveas_dismissed()`, `_write_json_file()` —
+  the full mechanism, all pure local file I/O against the already-loaded
+  in-memory catalog; **no new or different live API/DynamoDB calls**.
+
+**Validation performed:**
+- `python -m py_compile` on all changed modules — clean.
+- Verified live (post-rebase) against the repo owner's actual
+  `JSON/compute.json` and `JSON/storage.json`: `_list_json_files()`
+  correctly returns `["compute", "storage"]`, and both files parse as
+  flat rule-name arrays readable by `_load_json_selection()` (96 and 59
+  entries respectively) — no mechanism changes were needed.
+- `tui/tests/test_checkbox_save_load.py` (9 new headless tests, fake API,
+  `JSON_DIR` monkeypatched to a pytest `tmp_path` — no real filesystem
+  paths or live calls touched): checkbox toggle on/off and glyph swap;
+  `CellSelected` on the checkbox column toggles without triggering a
+  bindings load; empty/populated `/JSON` directory listing; Load checks
+  the right rows and sets the active file; Load with a stale rule name
+  warns but still checks the valid ones; Save is blocked with zero rows
+  checked; Save with an active file overwrites it directly with no modal;
+  Save with no active file opens `SaveAsScreen` and writes+activates a
+  new file. Full suite: **30 passed** (up from 21).
+- Confirmed the pre-existing 21 tests still pass unmodified — this
+  feature is additive to, not a rewrite of, the existing full-catalog-list
+  and search/CRUD flows.
+- Full end-to-end pixel-level mouse-click simulation was not exercised in
+  this session (consistent with the §12.13 precedent, where interactive
+  mouse-driven use was left for the repo owner to spot-check live) — the
+  underlying click-handling logic is covered at the `DataTable.CellSelected`
+  event level instead, the same level of fidelity used for every other
+  interactive-widget test in this suite.
+
+**Outstanding for the repo owner to confirm on their own machine:**
+real interactive mouse clicks on the checkbox column against
+`JSON/compute.json` / `JSON/storage.json` in a running terminal — this
+session validated the underlying load/save logic against both real files
+programmatically (see Validation above) but did not drive a live mouse
+click through the actual TUI process.
