@@ -175,41 +175,6 @@ def main_page() -> None:
         rule_select.options = filtered_rule_ids()
         rule_select.update()
 
-    async def load_rules() -> None:
-        refresh_button.disable()
-        rules_status.set_text("Loading rules...")
-        clear_detail()
-        clear_bindings()
-        try:
-            envelope = await api_get("/rules")
-            if not envelope.get("success", False):
-                err = envelope.get("error") or {}
-                raise RuntimeError(err.get("message", "API returned success=false"))
-
-            rows = envelope.get("data") or []
-            state["rules"] = sorted(
-                [r for r in rows if isinstance(r, dict) and r.get("rule_id")],
-                key=lambda r: r["rule_id"].lower(),
-            )
-
-            rule_select.options = [r["rule_id"] for r in state["rules"]]
-            rule_select.value = None
-            rule_select.update()
-
-            count_label.set_text(f'{len(state["rules"])} rules')
-            rules_status.set_text("Rules loaded successfully.")
-            detail_status.set_text("Select a rule to load its catalog metadata.")
-            bindings_status.set_text("Select a rule to load its current bindings.")
-        except Exception as exc:
-            state["rules"] = []
-            rule_select.options = []
-            rule_select.update()
-            count_label.set_text("0 rules")
-            rules_status.set_text(f"Error: {exc}")
-            ui.notify(f"Unable to load rules: {exc}", type="negative")
-        finally:
-            refresh_button.enable()
-
     async def load_catalog(rule_id: str | None) -> None:
         if not rule_id:
             clear_detail()
@@ -344,10 +309,49 @@ def main_page() -> None:
             load_bindings(rule_id),
         )
 
+    async def load_rules() -> None:
+        refresh_button.disable()
+        rules_status.set_text("Loading rules...")
+        clear_detail()
+        clear_bindings()
+        try:
+            envelope = await api_get("/rules")
+            if not envelope.get("success", False):
+                err = envelope.get("error") or {}
+                raise RuntimeError(err.get("message", "API returned success=false"))
+
+            rows = envelope.get("data") or []
+            state["rules"] = sorted(
+                [r for r in rows if isinstance(r, dict) and r.get("rule_id")],
+                key=lambda r: r["rule_id"].lower(),
+            )
+
+            rule_select.options = [r["rule_id"] for r in state["rules"]]
+            first_rule = rule_select.options[0] if rule_select.options else None
+            rule_select.value = first_rule
+            rule_select.update()
+
+            count_label.set_text(f'{len(state["rules"])} rules')
+            rules_status.set_text("Rules loaded successfully.")
+
+            if first_rule:
+                await load_selected_rule(first_rule)
+            else:
+                detail_status.set_text("No rules are available.")
+                bindings_status.set_text("No rules are available.")
+        except Exception as exc:
+            state["rules"] = []
+            rule_select.options = []
+            rule_select.update()
+            count_label.set_text("0 rules")
+            rules_status.set_text(f"Error: {exc}")
+            ui.notify(f"Unable to load rules: {exc}", type="negative")
+        finally:
+            refresh_button.enable()
+
     search.on("update:model-value", lambda _: apply_filter())
-    rule_select.on(
-        "update:model-value",
-        lambda event: ui.run_async(load_selected_rule(event.value)),
+    rule_select.on_value_change(
+        lambda event: ui.run_async(load_selected_rule(event.value))
     )
     refresh_button.on("click", lambda: ui.run_async(load_rules()))
 
