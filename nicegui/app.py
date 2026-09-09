@@ -7,7 +7,7 @@ Current scope:
 - Loads all AWS Config rules from GET /rules.
 - Presents them in a searchable/selectable list.
 - On selection, loads GET /rules/{ruleId}/catalog.
-- Displays description, severity, scopes, and parameter definitions.
+- Also loads GET /rules/{ruleId}/bindings and shows current bindings.
 - Does NOT know or use DynamoDB pk/sk/GSI details.
 
 Environment variables:
@@ -18,8 +18,10 @@ Environment variables:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from nicegui import ui
@@ -34,14 +36,15 @@ if not BASE_URL:
         "export Y62DB_BASE_URL='https://YOUR-API.execute-api.us-east-1.amazonaws.com/dev'"
     )
 
-HEADERS = {
-    "Accept": "application/json",
-}
+HEADERS = {"Accept": "application/json"}
 if BEARER_TOKEN:
     HEADERS["Authorization"] = f"Bearer {BEARER_TOKEN}"
 
 
-async def api_get(path: str) -> dict[str, Any]:
+async def api_get(
+    path: str,
+    params: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """GET one Y62DB REST resource and return the decoded contract envelope."""
     async with httpx.AsyncClient(
         base_url=BASE_URL,
@@ -49,15 +52,12 @@ async def api_get(path: str) -> dict[str, Any]:
         timeout=20.0,
         follow_redirects=True,
     ) as client:
-        response = await client.get(path)
+        response = await client.get(path, params=params)
 
     if response.status_code >= 400:
         try:
             body = response.json()
-            message = (
-                body.get("error", {}).get("message")
-                or f"HTTP {response.status_code}"
-            )
+            message = body.get("error", {}).get("message") or f"HTTP {response.status_code}"
         except Exception:
             message = response.text or f"HTTP {response.status_code}"
         raise RuntimeError(message)
@@ -104,32 +104,52 @@ def main_page() -> None:
 
             rules_status = ui.label("").classes("text-sm")
 
-        # Right side: catalog detail
-        with ui.card().classes("flex-1"):
-            ui.label("Rule Catalog Detail").classes("text-lg font-semibold")
-            detail_status = ui.label(
-                "Select a rule to load its catalog metadata."
-            ).classes("text-sm text-gray-500")
+        # Right side: catalog detail + current bindings
+        with ui.column().classes("flex-1 gap-4"):
+            with ui.card().classes("w-full"):
+                ui.label("Rule Catalog Detail").classes("text-lg font-semibold")
+                detail_status = ui.label(
+                    "Select a rule to load its catalog metadata."
+                ).classes("text-sm text-gray-500")
 
-            rule_id_label = ui.label("").classes("text-xl font-semibold")
-            source_id_label = ui.label("")
-            severity_label = ui.label("")
-            description_label = ui.label("").classes("whitespace-pre-wrap")
-            scopes_label = ui.label("").classes("whitespace-pre-wrap")
+                rule_id_label = ui.label("").classes("text-xl font-semibold")
+                source_id_label = ui.label("")
+                severity_label = ui.label("")
+                description_label = ui.label("").classes("whitespace-pre-wrap")
+                scopes_label = ui.label("").classes("whitespace-pre-wrap")
 
-            ui.separator()
-            ui.label("Parameters").classes("text-md font-semibold")
+                ui.separator()
+                ui.label("Parameters").classes("text-md font-semibold")
 
-            parameter_table = ui.table(
-                columns=[
-                    {"name": "name", "label": "Name", "field": "name", "align": "left"},
-                    {"name": "data_type", "label": "Type", "field": "data_type", "align": "left"},
-                    {"name": "required", "label": "Required", "field": "required", "align": "left"},
-                    {"name": "default_value", "label": "Default", "field": "default_value", "align": "left"},
-                ],
-                rows=[],
-                row_key="name",
-            ).classes("w-full")
+                parameter_table = ui.table(
+                    columns=[
+                        {"name": "name", "label": "Name", "field": "name", "align": "left"},
+                        {"name": "data_type", "label": "Type", "field": "data_type", "align": "left"},
+                        {"name": "required", "label": "Required", "field": "required", "align": "left"},
+                        {"name": "default_value", "label": "Default", "field": "default_value", "align": "left"},
+                    ],
+                    rows=[],
+                    row_key="name",
+                ).classes("w-full")
+
+            with ui.card().classes("w-full"):
+                ui.label("Current Bindings").classes("text-lg font-semibold")
+                bindings_status = ui.label(
+                    "Select a rule to load its current bindings."
+                ).classes("text-sm text-gray-500")
+
+                bindings_table = ui.table(
+                    columns=[
+                        {"name": "group", "label": "Group", "field": "group", "align": "left"},
+                        {"name": "binding", "label": "Binding", "field": "binding", "align": "left"},
+                        {"name": "status", "label": "Status", "field": "status", "align": "left"},
+                        {"name": "version", "label": "Version", "field": "version", "align": "left"},
+                        {"name": "updated_at", "label": "Updated", "field": "updated_at", "align": "left"},
+                        {"name": "payload", "label": "Other Payload", "field": "payload", "align": "left"},
+                    ],
+                    rows=[],
+                    row_key="row_key",
+                ).classes("w-full")
 
     def clear_detail() -> None:
         rule_id_label.set_text("")
@@ -139,6 +159,10 @@ def main_page() -> None:
         scopes_label.set_text("")
         parameter_table.rows = []
         parameter_table.update()
+
+    def clear_bindings() -> None:
+        bindings_table.rows = []
+        bindings_table.update()
 
     def filtered_rule_ids() -> list[str]:
         needle = (search.value or "").strip().lower()
@@ -155,6 +179,7 @@ def main_page() -> None:
         refresh_button.disable()
         rules_status.set_text("Loading rules...")
         clear_detail()
+        clear_bindings()
         try:
             envelope = await api_get("/rules")
             if not envelope.get("success", False):
@@ -173,6 +198,8 @@ def main_page() -> None:
 
             count_label.set_text(f'{len(state["rules"])} rules')
             rules_status.set_text("Rules loaded successfully.")
+            detail_status.set_text("Select a rule to load its catalog metadata.")
+            bindings_status.set_text("Select a rule to load its current bindings.")
         except Exception as exc:
             state["rules"] = []
             rule_select.options = []
@@ -237,10 +264,90 @@ def main_page() -> None:
             detail_status.set_text(f"Error: {exc}")
             ui.notify(f"Unable to load catalog for {rule_id}: {exc}", type="negative")
 
+    async def load_bindings(rule_id: str | None) -> None:
+        if not rule_id:
+            clear_bindings()
+            bindings_status.set_text("Select a rule to load its current bindings.")
+            return
+
+        clear_bindings()
+        bindings_status.set_text("Loading current bindings...")
+
+        try:
+            items: list[dict[str, Any]] = []
+            cursor: str | None = None
+
+            while True:
+                params: dict[str, Any] = {"limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+
+                envelope = await api_get(
+                    f"/rules/{rule_id}/bindings",
+                    params=params,
+                )
+                if not envelope.get("success", False):
+                    err = envelope.get("error") or {}
+                    raise RuntimeError(err.get("message", "API returned success=false"))
+
+                page = envelope.get("data") or []
+                items.extend(i for i in page if isinstance(i, dict))
+
+                meta = envelope.get("meta") or {}
+                cursor = meta.get("next_cursor")
+                if not cursor:
+                    break
+
+            rows = []
+            for item in items:
+                payload = item.get("payload") or {}
+                remaining_payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"status", "version"}
+                }
+                group = item.get("group", "")
+                binding = item.get("binding", "")
+                rows.append(
+                    {
+                        "row_key": f"{group}::{binding}",
+                        "group": group,
+                        "binding": binding,
+                        "status": payload.get("status", ""),
+                        "version": payload.get("version", ""),
+                        "updated_at": item.get("updated_at", "") or "",
+                        "payload": (
+                            json.dumps(remaining_payload, sort_keys=True, default=str)
+                            if remaining_payload
+                            else ""
+                        ),
+                    }
+                )
+
+            bindings_table.rows = rows
+            bindings_table.update()
+
+            if rows:
+                bindings_status.set_text(f"{len(rows)} binding(s) loaded.")
+            else:
+                bindings_status.set_text("No current bindings for this rule.")
+        except Exception as exc:
+            bindings_status.set_text(f"Error: {exc}")
+            ui.notify(
+                f"Unable to load bindings for {rule_id}: {exc}",
+                type="negative",
+            )
+
+    async def load_selected_rule(rule_id: str | None) -> None:
+        await asyncio.gather(
+            load_catalog(rule_id),
+            load_bindings(rule_id),
+        )
+
     search.on("update:model-value", lambda _: apply_filter())
     rule_select.on(
         "update:model-value",
-        lambda event: ui.run_async(load_catalog(event.value)),
+        lambda event: ui.run_async(load_selected_rule(event.value)),
     )
     refresh_button.on("click", lambda: ui.run_async(load_rules()))
 
