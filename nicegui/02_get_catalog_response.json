@@ -1,0 +1,26 @@
+{
+  "success": true,
+  "data": {
+    "rule_id": "access-keys-rotated",
+    "source_identifier": "ACCESS_KEYS_ROTATED",
+    "description": "Representative catalog description",
+    "severity": "Representative severity",
+    "scopes": [
+      "AWS::IAM::User"
+    ],
+    "managed_rule": true,
+    "parameters": [
+      {
+        "name": "maxAccessKeyAge",
+        "data_type": "number",
+        "required": true,
+        "default_value": "90"
+      }
+    ]
+  },
+  "error": null,
+  "meta": {
+    "request_id": "example",
+    "timestamp": "2026-09-09T18:00:00+00:00"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "data": {
+    "rule_id": "access-keys-rotated",
+    "group": "corp",
+    "binding": "default",
+    "payload": {
+      "status": "ACTIVE",
+      "version": 1,
+      "maxAccessKeyAge": 60
+    },
+    "created_at": "2026-09-09T18:00:00+00:00",
+    "updated_at": "2026-09-09T18:00:00+00:00"
+  },
+  "error": null,
+  "meta": {
+    "request_id": "example",
+    "timestamp": "2026-09-09T18:00:00+00:00"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "status": "ACTIVE",
+    "version": 2,
+    "maxAccessKeyAge": 45
+  },
+  "expected_version": 1
+}

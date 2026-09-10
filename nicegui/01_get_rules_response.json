@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "data": [
+    {
+      "rule_id": "access-keys-rotated",
+      "has_binding": true
+    },
+    {
+      "rule_id": "s3-bucket-public-read-prohibited",
+      "has_binding": false
+    }
+  ],
+  "error": null,
+  "meta": {
+    "request_id": "example",
+    "timestamp": "2026-09-09T18:00:00+00:00",
+    "count": 2
+  }
+}
